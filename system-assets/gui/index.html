@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Flywheel</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<a class="skip" href="#main-feed">跳到对话</a>
+<div class="workspace" id="workspace">
+<aside id="project-sidebar" class="project-sidebar" aria-label="最近项目" hidden>
+<header class="project-sidebar-head">
+<div class="project-sidebar-brand">
+<img class="flywheel-mark" src="/flywheel-logo.svg" alt="">
+<span class="project-sidebar-copy"><strong>Flywheel</strong><small>最近项目</small></span>
+</div>
+<button id="toggle-project-sidebar" class="sidebar-toggle" type="button" aria-expanded="true" aria-controls="project-list" aria-label="收起最近项目"><span aria-hidden="true"></span></button>
+</header>
+<nav id="project-list" class="project-list" aria-label="切换项目"></nav>
+<section id="project-switch-confirmation" class="project-switch-confirmation" hidden>
+<p>切换到 <strong id="switch-project-name"></strong>？</p>
+<small>当前运行会安全结束，新项目以暂停状态打开。</small>
+<div><button id="cancel-project-switch" type="button">取消</button><button id="confirm-project-switch" type="button" class="primary">切换</button></div>
+</section>
+<p id="project-switch-error" class="project-switch-error" role="alert"></p>
+</aside>
+<div class="workbench-shell">
+<header class="topbar">
+<div class="brand"><img class="flywheel-mark" src="/flywheel-logo.svg" alt=""><div><h1 id="project-name">Flywheel</h1><p id="project-path">正在连接项目</p></div></div>
+<div class="top-actions">
+<span id="connection" role="status">正在连接</span><button id="reconnect" hidden>重新连接</button>
+<button id="usage-toggle" aria-expanded="false" aria-controls="usage-panel">用量：—</button>
+<button id="toggle-tree" aria-expanded="false" aria-controls="work-tree">工作树</button><button id="evidence-toggle" aria-controls="evidence-panel" aria-expanded="false">目标与结果</button>
+<select id="theme" aria-label="外观"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
+<!-- CONTROL_START -->
+<button id="abort" hidden>暂停</button><button id="resume" hidden>继续</button><button id="stop">结束运行</button>
+<!-- CONTROL_END -->
+</div></header>
+<p id="connection-note" class="connection-note" role="status" hidden></p>
+<div class="panes">
+<section class="main-chat" aria-label="主对话">
+<header class="chat-heading"><span>与 Flywheel 对话</span><button id="main-history" class="history-shortcut" hidden>查看更多历史</button><span id="run-status"></span></header>
+<div id="main-feed" class="feed" aria-label="用户与 Manager 对话" tabindex="0"></div><button id="main-latest" class="latest" hidden>查看新消息</button>
+<!-- CONTROL_START -->
+<div id="write-surface" class="write-surface">
+<div id="pending-interaction" class="question" hidden></div><div id="interaction-options" class="choices"></div>
+<form id="message-form" class="composer"><textarea id="message" rows="1" aria-label="发送给 Flywheel 的消息" placeholder="向 Flywheel 发送消息"></textarea><div class="composer-footer"><span class="composer-hint">Enter 发送　Shift + Enter 换行</span><button id="send" class="send" type="submit" aria-label="发送消息"><span aria-hidden="true">↑</span></button></div></form>
+<p id="input-note" class="muted small" role="status"></p><p id="command-error" class="error-text small" role="alert"></p>
+<div id="stop-confirmation" class="question" hidden><p>结束本次运行？历史会保留，继续任务需要重新打开。</p><button id="cancel-stop">取消</button><button id="confirm-stop" class="danger">确认结束</button></div>
+</div>
+<!-- CONTROL_END -->
+<p id="observer-note" class="readonly" hidden>只读观察 · 请在 TUI 中回复或控制运行</p>
+</section>
+<aside id="work-tree" class="work-tree" aria-label="工作树" hidden>
+<header class="panel-heading"><h2>工作树</h2><button id="close-tree" class="icon-button" aria-label="收起工作树">×</button></header>
+<p class="small muted tree-note" id="tree-note">等待运行记录</p><div id="tree-content"></div><button id="older-nodes" class="load-more" hidden>加载更早的工作节点</button><button id="audit" class="load-more">全部事件</button>
+</aside>
+<section id="worker-panel" class="worker-panel" aria-label="Agent 只读对话" hidden>
+<header class="panel-heading"><div><h2 id="worker-title">Agent</h2><p class="small muted" id="worker-status"></p></div><button id="close-worker" class="icon-button" aria-label="关闭 Agent 对话">×</button></header>
+<button id="worker-history" class="history-shortcut" hidden>查看更多历史</button><div id="worker-feed" class="feed" tabindex="0" aria-label="Agent 工作对话"></div><button id="worker-latest" class="latest" hidden>查看新记录</button><p class="readonly">只读 · 暂不支持向 Worker 发送消息</p>
+</section></div>
+<section id="evidence-panel" class="evidence-panel" aria-label="原始目标与正式结果" hidden><header class="panel-heading"><h2>原始目标与正式结果</h2><button id="evidence-close" class="icon-button" aria-label="关闭结果">×</button></header><div id="evidence-content"></div></section>
+<section id="usage-panel" class="evidence-panel" aria-label="时间与 Token 账本" hidden><header class="panel-heading"><h2>时间与 Token</h2><button id="usage-close" class="icon-button" aria-label="关闭用量">×</button></header><div id="usage-content"></div></section>
+</div></div><script src="/app.js"></script></body></html>

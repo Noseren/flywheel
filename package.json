@@ -1,0 +1,54 @@
+{
+  "name": "@flywheel/runtime",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "files": [
+    "dist/",
+    "system-assets/",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "flywheel": "./dist/cli.js"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/run-tests.mjs",
+    "desktop:dev": "pnpm run build && tauri dev",
+    "desktop:build": "pnpm run build && tauri build"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0",
+    "@earendil-works/pi-tui": "^0.84.1",
+    "@openai/codex-sdk": "^0.146.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Noseren/flywheel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Noseren/flywheel/issues"
+  },
+  "homepage": "https://github.com/Noseren/flywheel#readme"
+}

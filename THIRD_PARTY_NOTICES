@@ -1,0 +1,36 @@
+Third-party dependency notices
+
+The root MIT license covers original Flywheel Runtime contributions. Dependencies
+and model services retain their own licenses and terms. This source preview does
+not distribute node_modules, model executables, Rust build outputs, benchmark
+datasets, or third-party task harnesses.
+
+Direct JavaScript dependencies (resolved versions in pnpm-lock.yaml):
+
+@anthropic-ai/claude-agent-sdk 0.3.241
+  Copyright Anthropic PBC. All rights reserved.
+  Package license: SEE LICENSE IN README.md.
+  Legal agreements: https://code.claude.com/docs/en/legal-and-compliance
+
+@openai/codex-sdk 0.146.1
+  Apache-2.0. Preserve the package's LICENSE and notices when redistributing it.
+
+@earendil-works/pi-tui 0.84.2
+  Package license: MIT.
+
+yaml 2.9.0
+  Package license: ISC.
+
+Development tools:
+  @tauri-apps/cli 2.11.4: Apache-2.0 OR MIT
+  typescript: Apache-2.0
+  @types/node: MIT
+
+The experimental desktop source uses tauri and tauri-build (MIT OR Apache-2.0),
+with exact resolutions recorded in src-tauri/Cargo.lock. The desktop icon is
+shared with Flywheel's local UI artwork.
+
+Installation retrieves dependencies with their own license files. Consult each
+resolved package for its full terms and transitive dependency notices before
+redistributing binaries or bundled dependencies. Model service access is governed
+separately by the provider and the user's account.

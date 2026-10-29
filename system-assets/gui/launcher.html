@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Flywheel · 本地工作区</title><link rel="stylesheet" href="/launcher.css?token=__TOKEN__"><script defer src="/launcher.js?token=__TOKEN__"></script></head>
+<body><header><a class="brand" href="#"><img class="flywheel-mark" src="/flywheel-logo.svg?token=__TOKEN__" alt=""><span>Flywheel</span></a><label class="theme">外观 <select id="theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label></header>
+<main class="launcher">
+<section class="recent-panel" aria-labelledby="recent-title">
+  <div class="section-heading"><div><p class="eyebrow">本地工作区</p><h1 id="recent-title">最近项目</h1><p class="muted">继续上一次的工作，打开时不会自动恢复运行。</p></div></div>
+  <div id="recent" class="recent-list"></div>
+  <div class="recent-footer"><button id="pick-folder" class="open-folder" type="button">打开其他文件夹</button><details id="directory-browser" class="manual-browser"><summary>系统窗口没有出现？输入目录路径</summary><form id="browse-form"><label for="path">项目目录</label><div class="row"><input id="path" placeholder="输入本机绝对路径" required><button>读取目录</button></div></form><div class="row navigation"><button id="parent" type="button">上一级</button><button id="choose" type="button" disabled>使用当前目录</button></div><p id="location" class="path"></p><div id="folders" aria-label="子目录"></div><p id="limit" class="hint"></p></details></div>
+</section>
+<section class="selection-panel" aria-label="项目详情与 Flywheel 标语">
+  <div id="welcome" class="selection-empty brand-stage"><p class="brand-signature">Flywheel</p><h2 id="launcher-slogan">让每一次迭代，都留下可以复核的证据。</h2></div>
+  <section id="project" hidden><p class="eyebrow" id="project-title"></p><h2 id="project-name"></h2><p id="project-path" class="path"></p>
+    <form id="open-form"><div id="goal-field"><label for="goal">你希望完成什么？（可稍后再说）</label><textarea id="goal" rows="3" placeholder="可以先打开项目，后台探索时再聊目标。"></textarea><details class="advanced"><summary>运行设置</summary><label for="iterations">候选尝试上限</label><input id="iterations" type="number" min="1" step="1" value="3" required><p class="hint">精简流程中未通过的候选也计数。默认共用 15 分钟执行预算、50 万已知 tokens；准备与优化共用，恢复不重置。模型结束后才返回的用量可能超出上限。</p></details></div>
+    <p id="project-note" class="muted"></p><button id="open" class="primary" type="submit">打开工作台</button></form>
+  </section>
+  <div class="feedback"><p id="status" class="hint" role="status" aria-live="polite"></p><p id="error" role="alert"></p></div>
+</section>
+</main>
+<footer>所有项目与运行记录均保存在本机</footer></body></html>

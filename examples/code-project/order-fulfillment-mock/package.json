@@ -1,0 +1,7 @@
+{
+  "name": "flywheel-order-fulfillment-mock",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.js" },
+  "engines": { "node": ">=22.19.0" }
+}

@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">Flywheel</title>
+  <desc id="description">透明背景的立体飞轮，五条蓝色弧光从上向下流动，中心弧光持续旋转。</desc>
+  <defs>
+    <linearGradient id="side-light" x1="160" y1="58" x2="160" y2="198" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#245cff"/>
+      <stop offset=".58" stop-color="#299dff"/>
+      <stop offset="1" stop-color="#72e5ff"/>
+    </linearGradient>
+    <linearGradient id="hub-light" x1="68" y1="91" x2="109" y2="164" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#225cff"/>
+      <stop offset=".58" stop-color="#35adff"/>
+      <stop offset="1" stop-color="#bff7ff"/>
+    </linearGradient>
+    <clipPath id="side-clip">
+      <path d="M91 59L147 62C212 65 212 191 147 194L91 197Z"/>
+    </clipPath>
+    <mask id="front-cutout">
+      <rect width="256" height="256" fill="#000"/>
+      <ellipse cx="91" cy="128" rx="51" ry="69" fill="#fff"/>
+      <ellipse cx="91" cy="128" rx="31" ry="48" fill="#000"/>
+    </mask>
+    <mask id="side-cutout" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <ellipse cx="91" cy="128" rx="31" ry="48" fill="black"/>
+    </mask>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <path id="band-1" pathLength="100" d="M102 59A51 69 0 0 1 102 197"/>
+    <path id="band-2" pathLength="100" d="M114 59A51 69 0 0 1 114 197"/>
+    <path id="band-3" pathLength="100" d="M126 59A51 69 0 0 1 126 197"/>
+    <path id="band-4" pathLength="100" d="M138 59A51 69 0 0 1 138 197"/>
+    <path id="band-5" pathLength="100" d="M150 59A51 69 0 0 1 150 197"/>
+  </defs>
+  <style>
+    .side { fill:#f7f9fc }
+    .shell-outline { fill:none; stroke:#090c12; stroke-width:8; stroke-linecap:round; stroke-linejoin:round }
+    .rail,.beam,.core,.hub-track,.hub-beam,.hub-core { fill:none; stroke-linecap:round }
+    .rail { stroke:#dce5f1; stroke-width:6; opacity:.74 }
+    .beam,.core { stroke-dasharray:25 75; animation:side-flow 1.55s linear infinite; animation-delay:var(--delay) }
+    .beam { stroke:url(#side-light); stroke-width:6; filter:drop-shadow(0 0 5px #238cff) }
+    .core { stroke:#ecfcff; stroke-width:1.35; stroke-dasharray:7 93; animation-delay:calc(var(--delay) - .06s) }
+    .front-fill { fill:#f7f9fc }
+    .front-edge,.inner-edge { fill:none; stroke:#090c12; stroke-width:8 }
+    .hub-track { stroke:#405069; stroke-width:3; opacity:.38 }
+    .hub-beam,.hub-core { stroke-dasharray:24 76; animation:hub-flow 1.18s linear infinite }
+    .hub-beam { stroke:url(#hub-light); stroke-width:4.5; filter:drop-shadow(0 0 5px #2477ff) }
+    .hub-core { stroke:#effdff; stroke-width:1.2; stroke-dasharray:7 93; animation-delay:-.06s }
+    @keyframes side-flow { to { stroke-dashoffset:-100 } }
+    @keyframes hub-flow { to { stroke-dashoffset:-100 } }
+    @media (prefers-reduced-motion:reduce) {
+      .beam,.core,.hub-beam,.hub-core { animation:none; stroke-dashoffset:-28 }
+    }
+  </style>
+  <g transform="rotate(5 128 128)">
+    <g mask="url(#side-cutout)">
+    <path class="side" d="M91 59L147 62C212 65 212 191 147 194L91 197Z"/>
+    <g clip-path="url(#side-clip)">
+      <use class="rail" href="#band-1"/><use class="rail" href="#band-2"/><use class="rail" href="#band-3"/><use class="rail" href="#band-4"/><use class="rail" href="#band-5"/>
+      <g style="--delay:0s"><use class="beam" href="#band-1"/><use class="core" href="#band-1"/></g>
+      <g style="--delay:-.08s"><use class="beam" href="#band-2"/><use class="core" href="#band-2"/></g>
+      <g style="--delay:-.16s"><use class="beam" href="#band-3"/><use class="core" href="#band-3"/></g>
+      <g style="--delay:-.24s"><use class="beam" href="#band-4"/><use class="core" href="#band-4"/></g>
+      <g style="--delay:-.32s"><use class="beam" href="#band-5"/><use class="core" href="#band-5"/></g>
+    </g>
+    <path class="shell-outline" d="M91 59L147 62C212 65 212 191 147 194L91 197"/>
+    </g>
+    <ellipse class="front-fill" cx="91" cy="128" rx="51" ry="69" mask="url(#front-cutout)"/>
+    <ellipse class="front-edge" cx="91" cy="128" rx="51" ry="69"/>
+    <ellipse class="inner-edge" cx="91" cy="128" rx="31" ry="48"/>
+    <ellipse class="hub-track" cx="91" cy="128" rx="22" ry="36" pathLength="100"/>
+    <ellipse class="hub-beam" cx="91" cy="128" rx="22" ry="36" pathLength="100"/>
+    <ellipse class="hub-core" cx="91" cy="128" rx="22" ry="36" pathLength="100"/>
+  </g>
+</svg>

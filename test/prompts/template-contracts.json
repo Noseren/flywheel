@@ -1,0 +1,421 @@
+{
+  "adapter.claude.job": [
+    "job_prompt"
+  ],
+  "adapter.codex.job": [
+    "denied_paths",
+    "job_prompt",
+    "read_roots",
+    "tools",
+    "write_roots"
+  ],
+  "adapter.generic.job": [
+    "job_prompt"
+  ],
+  "common.assistance-capable": [
+    "base_prompt",
+    "final_result_path",
+    "request_path"
+  ],
+  "common.assistance-resume": [
+    "child_results",
+    "decision",
+    "final_result_path",
+    "reason"
+  ],
+  "common.capability-context": [
+    "capability",
+    "job_prompt",
+    "operation",
+    "status"
+  ],
+  "common.conversation-decision": [
+    "conversation_prompt",
+    "decision_path"
+  ],
+  "common.decision-repair": [
+    "base_prompt",
+    "decision_path",
+    "issues"
+  ],
+  "common.delegation-capable": [
+    "base_prompt",
+    "final_result_path",
+    "max_children",
+    "remaining_depth",
+    "request_path"
+  ],
+  "common.delegation-child-repair": [
+    "issues",
+    "output_workspace",
+    "result_path"
+  ],
+  "common.delegation-child": [
+    "child_task",
+    "output_workspace",
+    "result_path"
+  ],
+  "common.delegation-repair": [
+    "final_result_path",
+    "issues",
+    "rejected_request_path",
+    "request_path"
+  ],
+  "common.delegation-resume": [
+    "child_results",
+    "final_result_path"
+  ],
+  "common.manager-decision": [
+    "capability",
+    "decision_path",
+    "message_source",
+    "runtime_context",
+    "user_message"
+  ],
+  "common.user-intervention": [
+    "job_prompt",
+    "message"
+  ],
+  "compact.judging": [
+    "artifact_path",
+    "goal_path",
+    "guide_path",
+    "holdout_path",
+    "judge_result_path",
+    "outputs_dir",
+    "result_path",
+    "subject_root",
+    "task_path",
+    "train_path"
+  ],
+  "compact.tasking": [
+    "artifact_path",
+    "goal_path",
+    "guide_path",
+    "holdout_path",
+    "outputs_dir",
+    "result_path",
+    "subject_root",
+    "task_path",
+    "train_path"
+  ],
+  "init.compact.confirm": [
+    "decision_path",
+    "goal_path",
+    "proposal_path",
+    "proposal_ref_path",
+    "proposal_summary",
+    "user_input"
+  ],
+  "init.compact.explore": [
+    "context_card_path",
+    "issues",
+    "project_root"
+  ],
+  "init.compact.prepare": [
+    "assistance_guidance",
+    "contract_dir",
+    "goal_path",
+    "issues",
+    "manifest_path",
+    "project_root",
+    "proposal_path",
+    "proposal_ref_path",
+    "result_path"
+  ],
+  "init.compact.proposal": [
+    "context_card_text",
+    "destination",
+    "document_path",
+    "goal_text",
+    "issues"
+  ],
+  "init.contract.generate": [
+    "context_card_path",
+    "contract_dir",
+    "goal_path",
+    "manifest_path",
+    "proposal_path",
+    "proposal_ref_path",
+    "result_path"
+  ],
+  "init.contract.repair": [
+    "context_card_path",
+    "contract_dir",
+    "goal_path",
+    "issues",
+    "manifest_path",
+    "proposal_path",
+    "proposal_ref_path",
+    "result_path"
+  ],
+  "init.evaluator.generate": [
+    "contract_dir",
+    "goal_path",
+    "manifest_path",
+    "project_native_strategy",
+    "proposal_path",
+    "requirements_path",
+    "result_path",
+    "task_path",
+    "tasking_guide_path"
+  ],
+  "init.evaluator.project-native": [],
+  "init.evaluator.repair": [
+    "goal_path",
+    "issues",
+    "manifest_path",
+    "project_native_strategy",
+    "proposal_path",
+    "requirements_path",
+    "result_path",
+    "task_path",
+    "tasking_guide_path"
+  ],
+  "init.evaluator.review": [
+    "contract_dir",
+    "coverage_path",
+    "goal_path",
+    "issues",
+    "manifest_path",
+    "project_root",
+    "proposal_path",
+    "requirements_path",
+    "result_path",
+    "review_path",
+    "task_path"
+  ],
+  "init.explore.generate": [
+    "context_card_path",
+    "project_root",
+    "user_goal"
+  ],
+  "init.explore.repair": [
+    "context_card_path",
+    "issues",
+    "project_root",
+    "user_goal"
+  ],
+  "init.intake.discuss": [
+    "decision_path",
+    "frozen_goal",
+    "messages",
+    "previous_goal_message_ids"
+  ],
+  "init.proposal.discuss": [
+    "proposal_summary",
+    "revision_prompt",
+    "user_input"
+  ],
+  "init.proposal.generate": [
+    "context_card_path",
+    "goal_path",
+    "schema_prompt",
+    "user_goal"
+  ],
+  "init.proposal.repair": [
+    "context_card_path",
+    "document_path",
+    "goal_path",
+    "issues",
+    "proposal_path",
+    "schema_prompt",
+    "user_goal"
+  ],
+  "init.proposal.revision": [
+    "feedback",
+    "goal_path",
+    "proposal_path",
+    "proposal_ref_path",
+    "schema_prompt"
+  ],
+  "init.proposal.schema": [
+    "destination",
+    "document_path"
+  ],
+  "init.smoke.discuss": [
+    "user_input",
+    "validation_context"
+  ],
+  "init.smoke.repair": [
+    "contract_manifest_path",
+    "goal_path",
+    "issues",
+    "proposal_path",
+    "report_path",
+    "result_path"
+  ],
+  "init.smoke.validate": [
+    "contract_dir",
+    "contract_manifest_path",
+    "goal_path",
+    "proposal_path",
+    "report_path",
+    "result_path"
+  ],
+  "run.assess-target.generate": [
+    "current_version",
+    "decision_path",
+    "evaluate_guide_path",
+    "evaluation_report_path",
+    "goal_path",
+    "holdout_report_path",
+    "report_path",
+    "result_path",
+    "task_path"
+  ],
+  "run.assess-target.repair": [
+    "base_prompt",
+    "decision_path",
+    "issues",
+    "report_path",
+    "result_path"
+  ],
+  "run.compact.optimize": [
+    "assistance_guidance",
+    "change_scope",
+    "context_path",
+    "worktree_path"
+  ],
+  "run.evaluate.generate": [
+    "evals_dir",
+    "evaluate_guide_path",
+    "evaluation_topology",
+    "evaluator_path",
+    "evidence_dir",
+    "holdout_evals_dir",
+    "holdout_report_path",
+    "outputs_dir",
+    "report_path",
+    "result_path",
+    "run_dir",
+    "subject_root",
+    "task_path",
+    "train_evals_dir"
+  ],
+  "run.evaluate.repair": [
+    "base_prompt",
+    "issues",
+    "report_path",
+    "result_path"
+  ],
+  "run.propose.generate": [
+    "agent_state_id",
+    "current_version",
+    "evaluation_report_path",
+    "manager_guidance",
+    "plan_path",
+    "previous_rounds_dir",
+    "proposal_path",
+    "steering_revision_id",
+    "task_path",
+    "train_evals_dir",
+    "train_outputs_dir"
+  ],
+  "run.propose.repair": [
+    "base_prompt",
+    "issues",
+    "output_path"
+  ],
+  "run.refine.select": [
+    "candidates",
+    "current_train_evaluation_path",
+    "decision_path",
+    "selection_path",
+    "task_path"
+  ],
+  "run.refine.worktree-repair": [
+    "review_path",
+    "worktree_path"
+  ],
+  "run.refine.worktree": [
+    "change_scope",
+    "hypothesis_id",
+    "proposal_path",
+    "task_path",
+    "worktree_path"
+  ],
+  "run.review.candidate": [
+    "changed_paths_path",
+    "diff_path",
+    "hypothesis_id",
+    "proposal_path",
+    "review_path",
+    "task_path",
+    "worktree_path"
+  ],
+  "run.steering.anchor": [
+    "attestation_kind",
+    "attestation_path",
+    "candidate_boundary_path",
+    "candidate_evaluator_path",
+    "candidate_id",
+    "candidate_task_path",
+    "current_boundary_path",
+    "current_evaluator_path",
+    "current_task_path",
+    "episode_paths",
+    "original_goal_path",
+    "proposal_path",
+    "report_path",
+    "result_path",
+    "subject_sha256"
+  ],
+  "run.steering.propose": [
+    "boundary_output_path",
+    "candidate_id",
+    "current_boundary_path",
+    "current_evaluator_path",
+    "current_revision_id",
+    "current_task_path",
+    "episode_paths",
+    "evaluator_output_path",
+    "original_goal_path",
+    "proposal_output_path",
+    "task_output_path"
+  ],
+  "run.steering.repair": [
+    "base_prompt",
+    "issues",
+    "workspace"
+  ],
+  "run.steering.validate": [
+    "attestation_kind",
+    "attestation_path",
+    "candidate_boundary_path",
+    "candidate_evaluator_path",
+    "candidate_id",
+    "candidate_task_path",
+    "current_boundary_path",
+    "current_evaluator_path",
+    "current_task_path",
+    "episode_paths",
+    "original_goal_path",
+    "proposal_path",
+    "report_path",
+    "result_path",
+    "subject_sha256"
+  ],
+  "run.tasking.batch-generate": [
+    "artifact_path",
+    "candidate_outputs_dir",
+    "collector_guide_path",
+    "collector_path",
+    "evaluation_topology",
+    "evidence_dir",
+    "holdout_data_path",
+    "holdout_outputs_dir",
+    "result_path",
+    "subject_root",
+    "task_path",
+    "tasking_guide_path",
+    "train_data_path",
+    "train_outputs_dir"
+  ],
+  "run.tasking.batch-repair": [
+    "base_prompt",
+    "issues",
+    "outputs_dir",
+    "result_path"
+  ]
+}
