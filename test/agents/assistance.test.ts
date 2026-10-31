@@ -331,7 +331,7 @@ test("real AgentService seam meters every child and parent continuation once wit
 
 for (const scenario of [
   { name: "70s child leaves time for 20s parent", childMs: 70_000, parentMs: 20_000, unknown: false, timeout: false },
-  { name: "120s child settles without starting parent", childMs: 120_000, parentMs: 0, unknown: false, timeout: true },
+  { name: "120s child settles then resumes original required parent", childMs: 120_000, parentMs: 0, unknown: false, timeout: true },
   { name: "child and parent share the 120s ceiling", childMs: 70_000, parentMs: 50_000, unknown: false, timeout: true },
   { name: "unknown timeout retains occupancy and never reruns child", childMs: 120_000, parentMs: 0, unknown: true, timeout: true },
 ]) {
@@ -360,9 +360,10 @@ for (const scenario of [
     } }, new PromptAssetStore());
     const context = { capabilityId: "init", operationId: "prepare", status: "running", sessions: {} as Record<string, string>,
       checkpoint: async () => {}, emit: async (type: "job.started" | "job.event" | "job.completed", data: Record<string, unknown>) => { events.push({ type, data }); } };
-    if (scenario.timeout) await assert.rejects(executePersistentAgentJob(agent, job, context), scenario.unknown ? /time/ : /本批协作超过授权时限/);
+    if (scenario.unknown) await assert.rejects(executePersistentAgentJob(agent, job, context), /time/);
     else assert.equal((await executePersistentAgentJob(agent, job, context)).status, "completed");
-    assert.equal(calls, scenario.childMs === 120_000 ? 2 : 3);
+    const expectedCalls = scenario.unknown ? 2 : scenario.timeout && scenario.childMs !== 120_000 ? 4 : 3;
+    assert.equal(calls, expectedCalls);
     const saved = JSON.parse(await readFile(path.join(await controlDirectory(root), "assistance.json"), "utf8"));
     const reservation = budget.state.reservations![saved.reservationId]!;
     assert.equal(saved.invocationEstimate.activeMs, 30_000);
@@ -385,9 +386,14 @@ for (const scenario of [
       assert.equal(reservation.tokensRemaining, 0);
       assert.equal(budget.state.unknownUsageInvocations, 0);
       assert.equal(events.filter(e => e.data.sdkEvent === "assistance.settled").length, 1);
-      assert.equal((await executePersistentAgentJob(agent, job, context)).status, scenario.timeout ? "aborted" : "completed");
+      assert.equal(saved.fallback, scenario.timeout ? "known-timeout" : undefined);
+      assert.equal(saved.finalResult.status, "completed");
+      assert.equal(budget.state.knownTokens, 1100 * expectedCalls);
+      const optionalCalls = Object.values(budget.state.invocations).filter(entry => entry.reservationId === saved.reservationId);
+      assert.equal(optionalCalls.length, scenario.childMs === 120_000 ? 1 : 2);
+      assert.equal((await executePersistentAgentJob(agent, job, context)).status, "completed");
     }
-    assert.equal(calls, scenario.childMs === 120_000 ? 2 : 3, "restore never starts a replacement invocation");
+    assert.equal(calls, expectedCalls, "restore never starts a replacement invocation");
   });
 }
 
@@ -411,7 +417,7 @@ for (const phase of ["child", "parent"] as const) for (const unknown of [false, 
     const events: Array<{ type: string; data: Record<string, unknown> }> = [];
     const agent = new DefaultAgentService({ provider: "mock", model: "wall-only", async run(current, signal) {
       calls++;
-      const expires = phase === "child" ? !!current.parentJobId : !current.parentJobId;
+      const expires = !!current.invocationReservation && (phase === "child" ? !!current.parentJobId : !current.parentJobId);
       if (expires) {
         await new Promise<void>(resolve => {
           if (signal?.aborted) resolve();
@@ -428,9 +434,11 @@ for (const phase of ["child", "parent"] as const) for (const unknown of [false, 
     // as a real provider socket would, without sleeping for the production cap.
     const keepAlive = setInterval(() => {}, 1000);
     try {
-      await assert.rejects(executePersistentAgentJob(agent, job, context), unknown ? /终态用量无法核实/ : /本批协作超过授权时限/);
+      if (unknown) await assert.rejects(executePersistentAgentJob(agent, job, context), /终态用量无法核实/);
+      else assert.equal((await executePersistentAgentJob(agent, job, context)).status, "completed");
     } finally { clearInterval(keepAlive); }
-    assert.equal(calls, phase === "child" ? 1 : 2);
+    const expectedCalls = (phase === "child" ? 1 : 2) + (unknown ? 0 : 1);
+    assert.equal(calls, expectedCalls);
     assert.ok(budget.remainingActiveMs(seeded.reservationId) > 100_000, "only the persisted wall deadline expired");
     const saved = JSON.parse(await readFile(file, "utf8"));
     const reservation = budget.state.reservations![saved.reservationId]!;
@@ -443,12 +451,135 @@ for (const phase of ["child", "parent"] as const) for (const unknown of [false, 
       await assert.rejects(executePersistentAgentJob(agent, job, context), /授权时间已到期|终态无法核实/);
     } else {
       assert.equal(saved.state, "finished");
-      assert.equal(saved.finalResult.status, "aborted");
-      assert.match(saved.finalResult.message, /本批协作超过授权时限/);
+      assert.equal(saved.fallback, "known-timeout");
+      assert.equal(saved.finalResult.status, "completed");
+      assert.equal(budget.state.knownTokens, expectedCalls * 1100);
       assert.equal(reservation.closed, true);
       assert.equal(events.filter(e => e.data.sdkEvent === "assistance.settled").length, 1);
-      assert.equal((await executePersistentAgentJob(agent, job, context)).status, "aborted");
+      assert.equal((await executePersistentAgentJob(agent, job, context)).status, "completed");
     }
-    assert.equal(calls, phase === "child" ? 1 : 2);
+    assert.equal(calls, expectedCalls);
   });
 }
+
+test("known timeout fallback restores the original session without Child evidence or renewed optional authority", async () => {
+  const { root, input, job, request, budget: initial } = await fixture();
+  job.prompt = promptAsset("common.user-intervention", { job_prompt: "prepare", message: "confirmed scope" });
+  let now = 0;
+  const budget = new ExecutionBudget(initial.state, async () => {}, () => now);
+  job.executionBudget = budget;
+  request.tasks = request.tasks.slice(0, 1);
+  request.purpose = "check";
+  const resumes: Array<string | undefined> = [];
+  let calls = 0;
+  let childCalls = 0;
+  let timedContinuation = false;
+  let fallbackCalls = 0;
+  const agent = new DefaultAgentService({ provider: "mock", model: "fallback", async run(current) {
+    calls++;
+    resumes.push(current.resumeSessionId);
+    await current.onEvent?.({ sdkEvent: "thread.started", thread_id: current.parentJobId ? "child-session" : "parent-session" });
+    if (calls === 1) {
+      await writeFile(current.writeRoots.find(file => file.endsWith("request.json"))!, JSON.stringify(request));
+    } else if (current.parentJobId) {
+      childCalls++;
+      now += 70_000;
+      await complete({ ...current, prompt: job.prompt });
+    } else if (current.invocationReservation) {
+      timedContinuation = true;
+      now += 50_000;
+      // This completed-looking draft must not be reused after the timeout.
+      await complete({ ...current, prompt: job.prompt }, "unaccepted partial check");
+    } else {
+      fallbackCalls++;
+      assert.match(current.prompt, /没有接纳任何协作报告/);
+      assert.match(current.prompt, /不属于已经结束的协作批/);
+      assert.equal(current.readRoots.some(value => value.includes(`${path.sep}children${path.sep}`)), false);
+      assert.equal(current.writeRoots.some(value => value.includes(`${path.sep}children${path.sep}`)), false);
+      await assert.rejects(readFile(job.resultPath!), /ENOENT/);
+      await complete({ ...current, prompt: job.prompt }, "independently finished required work");
+    }
+    return { success: true, usage: { inputTokens: 1000, outputTokens: 100 } };
+  } }, new PromptAssetStore());
+  let crashAfterSettlement = true;
+  const context = { capabilityId: "init", operationId: "prepare", status: "running", sessions: {} as Record<string, string>,
+    checkpoint: async () => {}, emit: async (_type: string, data: Record<string, unknown>) => {
+      if (data.sdkEvent === "assistance.settled" && crashAfterSettlement) {
+        crashAfterSettlement = false;
+        throw new Error("crash after known timeout settlement");
+      }
+    } };
+  await assert.rejects(executePersistentAgentJob(agent, job, context), /crash after known timeout settlement/);
+  assert.equal(timedContinuation, true);
+  const savedFile = path.join(await controlDirectory(root), "assistance.json");
+  const settled = JSON.parse(await readFile(savedFile, "utf8"));
+  assert.equal(settled.state, "continuation");
+  assert.equal(settled.fallback, "known-timeout");
+  assert.equal(settled.children[0].state, "finished");
+  assert.equal(budget.state.reservations![settled.reservationId]!.closed, true);
+  await writeFile(input, "changed after timeout");
+  await assert.rejects(executePersistentAgentJob(agent, job, context), /inputs changed/);
+  assert.equal(calls, 3);
+  await writeFile(input, "public input");
+  // Restart is past the old wall deadline. Only required work can continue.
+  const previousNow = Date.now;
+  Date.now = () => previousNow() + 120_001;
+  try { assert.equal((await executePersistentAgentJob(agent, job, context)).status, "completed"); }
+  finally { Date.now = previousNow; }
+  assert.equal((await executePersistentAgentJob(agent, job, context)).status, "completed");
+  assert.equal(childCalls, 1);
+  assert.equal(fallbackCalls, 1);
+  assert.equal(calls, 4);
+  assert.deepEqual(resumes, [undefined, undefined, "parent-session", "parent-session"]);
+  assert.equal(budget.state.knownTokens, 4400);
+  assert.equal(budget.state.repairUsed, false);
+  assert.equal(Object.values(budget.state.assistance!.decisions).length, 1);
+});
+
+test("known timeout fallback still stops when the original task budget is exhausted", async () => {
+  const { root, job, request, budget: initial } = await fixture();
+  job.prompt = promptAsset("common.user-intervention", { job_prompt: "prepare", message: "confirmed scope" });
+  let now = 0;
+  const budget = new ExecutionBudget(initial.state, async () => {}, () => now);
+  job.executionBudget = budget;
+  request.tasks = request.tasks.slice(0, 1);
+  let calls = 0;
+  const agent = new DefaultAgentService({ provider: "mock", model: "fallback-budget", async run(current) {
+    calls++;
+    if (!current.parentJobId) await writeFile(current.writeRoots.find(file => file.endsWith("request.json"))!, JSON.stringify(request));
+    else now += 120_000;
+    return { success: true, usage: { inputTokens: current.parentJobId ? 600_000 : 1000, outputTokens: 100 } };
+  } }, new PromptAssetStore());
+  const context = { capabilityId: "init", operationId: "prepare", status: "running", sessions: {} as Record<string, string>,
+    checkpoint: async () => {}, emit: async () => {} };
+  await assert.rejects(executePersistentAgentJob(agent, job, context), /tokens/);
+  assert.equal(calls, 2);
+  assert.equal(budget.state.knownTokens, 601_200);
+  assert.equal(budget.state.unknownUsageInvocations, 0);
+  const saved = JSON.parse(await readFile(path.join(await controlDirectory(root), "assistance.json"), "utf8"));
+  assert.equal(saved.fallback, "known-timeout");
+  assert.equal(budget.state.reservations![saved.reservationId]!.closed, true);
+});
+
+test("user cancellation during timeout settlement prevents fallback and stays cancelled on restore", async () => {
+  const { job, request, budget: initial } = await fixture();
+  job.prompt = promptAsset("common.user-intervention", { job_prompt: "prepare", message: "confirmed scope" });
+  let now = 0;
+  job.executionBudget = new ExecutionBudget(initial.state, async () => {}, () => now);
+  request.tasks = request.tasks.slice(0, 1);
+  const controller = new AbortController();
+  let calls = 0;
+  const agent = new DefaultAgentService({ provider: "mock", model: "cancel-fallback", async run(current) {
+    calls++;
+    if (!current.parentJobId) await writeFile(current.writeRoots.find(file => file.endsWith("request.json"))!, JSON.stringify(request));
+    else now += 120_000;
+    return { success: true, usage: { inputTokens: 1000, outputTokens: 100 } };
+  } }, new PromptAssetStore());
+  const context = { capabilityId: "init", operationId: "prepare", status: "running", sessions: {} as Record<string, string>,
+    checkpoint: async () => {}, emit: async (_type: string, data: Record<string, unknown>) => {
+      if (data.sdkEvent === "assistance.settled") controller.abort();
+    } };
+  assert.equal((await executePersistentAgentJob(agent, job, context, controller.signal)).status, "aborted");
+  assert.equal((await executePersistentAgentJob(agent, job, context)).status, "aborted");
+  assert.equal(calls, 2);
+});

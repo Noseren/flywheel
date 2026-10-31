@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { officialEvidence, resolveEvidenceFile } from "../../src/gui/evidence.ts";
 import type { GuiTimelineEntry } from "../../src/gui/server.ts";
+import { targetSummaryText } from "../../src/capabilities/run/target-summary.ts";
 
 function entry(type: string, data: Record<string, unknown>, overrides = {}): GuiTimelineEntry {
   return { id: "event-1", timestamp: "2026-09-08T00:00:00Z", category: "runtime", kind: "event", actor: "Runtime", title: type,
@@ -42,6 +43,18 @@ test("compact official candidate results require booleans and preserve event ver
   ]);
 });
 
+test("component routing keeps evaluator success separate from independent target assessment", () => {
+  const records = officialEvidence([
+    entry("operation.activity", { retained: true, evaluationTarget: "achieved" }, { id: "retained" }),
+    entry("operation.completed", { operationId: "route_r4", status: "completed", result: { assessment: "achieved", reportPath: ".flywheel/router.md" } }),
+    entry("operation.completed", { operationId: "assess_target", status: "paused", result: { assessment: "inconclusive", reportPath: ".flywheel/assessment.md" } }, { id: "assessed" }),
+  ]);
+  assert.deepEqual(records.map(record => [record.id, record.title]), [
+    ["retained", "候选已保留为正式版本"],
+    ["assessed", "现有证据不足以判定"],
+  ]);
+});
+
 test("evidence paths reject traversal, directories and symlink escapes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "flywheel-evidence-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "flywheel-evidence-outside-"));
@@ -53,4 +66,18 @@ test("evidence paths reject traversal, directories and symlink escapes", async (
   await assert.rejects(resolveEvidenceFile(root, ".flywheel"));
   await symlink(outside, path.join(root, ".flywheel", "escape"), process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(resolveEvidenceFile(root, ".flywheel/escape/secret.md"), /outside/);
+});
+
+test("validated target outcomes expose a bounded user summary and unresolved facts without treating uncertainty as failure", () => {
+  const userSummary = { summary: "公开检查通过，组合证据不足。", unresolved: ["两种选项同时启用的行为尚未验证。"] };
+  const records = officialEvidence([
+    entry("job.event", { userSummary }),
+    entry("operation.completed", { operationId: "assess_target", status: "paused", result: { assessment: "inconclusive", reportPath: ".flywheel/report.json", userSummary } }),
+  ]);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].title, "现有证据不足以判定");
+  assert.match(records[0].summary!, /未决事项：[\s\S]*两种选项/);
+  for (const invalid of [{ summary: "x", unresolved: "not a list" }, { summary: "x", unresolved: [false] }, { summary: "x", unresolved: Array(9).fill("x") }, { summary: "x", unresolved: [], authority: "achieved" }]) {
+    assert.equal(targetSummaryText(invalid), undefined);
+  }
 });

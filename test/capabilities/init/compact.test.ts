@@ -74,6 +74,9 @@ async function fixture(options: { invalidFirst?: boolean; invalidAlways?: boolea
     } },
   });
   const state = await capability.createState();
+  // These regression cases exercise the already persisted v2 preparation path.
+  // v3 independent routing is covered separately with routing-aware agents.
+  state.assistanceRevision = COMPACT_ASSISTANCE_REVISION;
   state.proposal = { artifactPath: "subject.txt", documentPath: ".flywheel/init/proposal.md" };
   const services = capability.services(state, new AbortController().signal);
   await services.workspace.writeText(path.join(root, state.proposal.documentPath), "Evaluate via the public check.");
@@ -287,6 +290,35 @@ test("preparation never regenerates or repairs an evaluator after the ready hand
   assert.equal(await readFile(evaluatorPath, "utf8"), infrastructureFailureEvaluator);
 });
 
+test("baseline uses a source-only subject and explicit frozen goal path", async () => {
+  const context = await fixture();
+  const generate = context.agent.execute.bind(context.agent);
+  context.agent.execute = async job => {
+    const response = await generate(job);
+    await writeFile(path.join(context.root, ".flywheel/contract/evaluator.mjs"), evaluator.replace(
+      "fs.writeFileSync(request.outputDir",
+      "if (fs.existsSync(request.subjectRoot+'/.flywheel')) throw Error('Runtime assets leaked');\nif (!fs.readFileSync(request.goalPath,'utf8').includes('Keep this original goal.')) throw Error('Missing frozen goal');\nfs.writeFileSync(request.outputDir"));
+    return response;
+  };
+  assert.equal((await prepareCompactOperation(context)).status, "completed");
+  assert.equal(context.verifications.count, 1);
+});
+
+test("baseline refuses evaluator writes to its isolated source", async () => {
+  const context = await fixture();
+  const generate = context.agent.execute.bind(context.agent);
+  context.agent.execute = async job => {
+    const response = await generate(job);
+    await writeFile(path.join(context.root, ".flywheel/contract/evaluator.mjs"), evaluator.replace(
+      "fs.writeFileSync(request.outputDir",
+      "fs.writeFileSync(request.artifactPath,'Unauthorized edit');\nfs.writeFileSync(request.outputDir"));
+    return response;
+  };
+  await assert.rejects(prepareCompactOperation(context), /Evaluator changed preparation subject checkpoint/);
+  assert.equal(await readFile(path.join(context.root, "subject.txt"), "utf8"), "Original subject\n");
+  assert.equal(context.jobs.length, 1);
+});
+
 test("compact preparation cannot repair away subject writes", async () => {
   const context = await fixture({ mutateSubject: true });
   await assert.rejects(prepareCompactOperation(context), /checkpoint/);
@@ -343,6 +375,8 @@ test("compact baseline creation rejects changed evaluator bytes even when manife
 
 test("one brief confirmation proceeds through real verification and v1 without another approval", async () => {
   const { capability, root, jobs } = await fixture();
+  const createState = capability.createState.bind(capability);
+  capability.createState = async () => { const state = await createState(); state.assistanceRevision = COMPACT_ASSISTANCE_REVISION; return state; };
   const signal = new AbortController().signal;
   const pending = await runCapability(capability, { type: "start" }, signal);
   assert.equal(pending.status, "waiting_for_user");
@@ -371,7 +405,7 @@ test("Run reuses the Init-bound baseline without executing its evaluator again",
   const project = await loadProject(context.root);
   const run = new RunCapability(project, { execute: async () => { throw new Error("No model work expected"); } }, { maxIterations: 0 });
   const state = await runCapability(run, { type: "start" }, new AbortController().signal);
-  assert.equal(state.status, "paused");
+  assert.equal(state.status, "paused", JSON.stringify(state));
   assert.equal(state.compact?.baselineResultPath, path.join(context.root, ".flywheel/runtime/preparation-baseline/result.json"));
   assert.equal(context.verifications.count, 1);
   assert.equal(await context.services.workspace.exists(path.join(context.root, ".flywheel/runtime/runs/v1/verification/result.json")), false);

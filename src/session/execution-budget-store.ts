@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createExecutionBudgetState, ExecutionBudget, type ExecutionBudgetLimits, type ExecutionBudgetState } from "./execution-budget.ts";
+import { createExecutionBudgetState, validExecutionBudgetLimits, ExecutionBudget, type ExecutionBudgetLimits, type ExecutionBudgetState } from "./execution-budget.ts";
 
 const budgets = new Map<string, Promise<ExecutionBudget>>();
 
@@ -17,7 +17,7 @@ function count(value: unknown): value is number {
 function parseState(value: unknown): ExecutionBudgetState {
   const limits = record(value) && record(value.limits) ? value.limits : {};
   if (!record(value) || value.schemaVersion !== 1 || !record(value.limits)
-    || !["candidateAttempts", "activeMs", "knownTokens"].every((key) => Number.isSafeInteger(limits[key]) && Number(limits[key]) > 0)
+    || !validExecutionBudgetLimits(limits as unknown as ExecutionBudgetLimits)
     || !Array.isArray(value.attempts) || !value.attempts.every((entry) => typeof entry === "string")
     || new Set(value.attempts).size !== value.attempts.length || typeof value.repairUsed !== "boolean"
     || !count(value.activeMs) || !count(value.knownTokens) || !Number.isSafeInteger(value.unknownUsageInvocations)
@@ -25,6 +25,16 @@ function parseState(value: unknown): ExecutionBudgetState {
     || (value.activeUpdatedAt !== undefined && !count(value.activeUpdatedAt))
     || (value.processes !== undefined && !record(value.processes))) {
     throw new Error("Persisted execution budget is invalid; refusing to reset it");
+  }
+  if (value.limitChanges !== undefined) {
+    if (!Array.isArray(value.limitChanges) || new Set(value.limitChanges.map(change => record(change) ? change.authorizationId : undefined)).size !== value.limitChanges.length) throw new Error("Invalid budget authorization history");
+    for (const change of value.limitChanges) {
+      if (!record(change) || typeof change.authorizationId !== "string" || !change.authorizationId.trim()
+        || typeof change.reason !== "string" || !change.reason.trim() || !count(change.at)
+        || !record(change.previous) || !validExecutionBudgetLimits(change.previous as unknown as ExecutionBudgetLimits)
+        || !record(change.next) || change.next.mode !== "unbounded" || !validExecutionBudgetLimits(change.next as unknown as ExecutionBudgetLimits)) throw new Error("Invalid budget authorization history");
+    }
+    if (value.limitChanges.length && limits.mode !== "unbounded") throw new Error("Budget authorization history does not match current limits");
   }
   for (const entry of [...Object.values(value.invocations), ...Object.values(value.processes ?? {})]) {
     if (!record(entry) || !count(entry.startedAt) || (entry.endedAt !== undefined && !count(entry.endedAt))
@@ -34,13 +44,20 @@ function parseState(value: unknown): ExecutionBudgetState {
   const estimate = (entry: unknown): boolean => record(entry) && Number.isSafeInteger(entry.tokens) && Number(entry.tokens) >= 0
     && Number.isSafeInteger(entry.activeMs) && Number(entry.activeMs) >= 0 && typeof entry.source === "string" && !!entry.source;
   const authorization = (entry: unknown): boolean => Number.isSafeInteger(entry) && Number(entry) > 0 && Number(entry) <= 120_000;
+  const chain = (entry: unknown): boolean => record(entry) && entry.revision === "2026-10-29.compact.v3"
+    && Number.isSafeInteger(entry.slots) && Number(entry.slots) >= 1 && Number(entry.slots) <= 16
+    && Number.isSafeInteger(entry.slotsRemaining) && Number(entry.slotsRemaining) >= 0 && Number(entry.slotsRemaining) <= Number(entry.slots)
+    && entry.perInvocationMs === 120_000;
   if (value.reservations !== undefined) {
     if (!record(value.reservations)) invalid();
     for (const entry of Object.values(value.reservations as Record<string, unknown>)) {
       if (!record(entry) || !["required", "assistance"].includes(String(entry.kind)) || !estimate(entry.estimate)
         || (entry.kind === "assistance" && !estimate(entry.invocationEstimate))
         || (entry.invocationEstimate !== undefined && !estimate(entry.invocationEstimate))
-        || (entry.authorizedActiveMs !== undefined && (entry.kind !== "assistance" || !authorization(entry.authorizedActiveMs)
+        || (entry.componentChain !== undefined && (entry.kind !== "assistance" || !chain(entry.componentChain)
+          || entry.authorizedActiveMs !== Number((entry.componentChain as Record<string, unknown>).slots) * 120_000
+          || Number(entry.activeMsRemaining) !== Number((entry.componentChain as Record<string, unknown>).slotsRemaining) * 120_000))
+        || (entry.authorizedActiveMs !== undefined && (entry.kind !== "assistance" || (!entry.componentChain && !authorization(entry.authorizedActiveMs))
           || Number((entry.estimate as Record<string, unknown>).activeMs) > Number(entry.authorizedActiveMs)))
         || !count(entry.tokensRemaining) || !count(entry.activeMsRemaining)
         || (entry.activeMsAtStart !== undefined && !count(entry.activeMsAtStart))
@@ -60,19 +77,20 @@ function parseState(value: unknown): ExecutionBudgetState {
         || typeof entry.binding !== "string" || !entry.binding || typeof entry.admitted !== "boolean"
         || typeof entry.requestFingerprint !== "string" || (entry.reason !== undefined && typeof entry.reason !== "string")
         || (entry.estimate !== undefined && !estimate(entry.estimate))
-        || (entry.authorizedActiveMs !== undefined && (!entry.admitted || !authorization(entry.authorizedActiveMs)))) invalid();
+        || (entry.authorizedActiveMs !== undefined && (!entry.admitted || !Number.isSafeInteger(entry.authorizedActiveMs) || Number(entry.authorizedActiveMs) <= 0))) invalid();
       const decision = entry as Record<string, unknown>;
       if (decision.admitted) {
         const reservations = value.reservations as Record<string, unknown> | undefined;
         if (typeof decision.reservationId !== "string" || !record(reservations?.[decision.reservationId])
           || (reservations![decision.reservationId] as Record<string, unknown>).kind !== "assistance" || !estimate(decision.estimate)
           || (reservations![decision.reservationId] as Record<string, unknown>).authorizedActiveMs !== decision.authorizedActiveMs
+          || (!(reservations![decision.reservationId] as Record<string, unknown>).componentChain && decision.authorizedActiveMs !== undefined && !authorization(decision.authorizedActiveMs))
           || admittedWindows.has(String(decision.windowId))) invalid();
         admittedWindows.add(String(decision.windowId));
         admittedCount++;
       }
     }
-    if (admittedCount > 2) invalid();
+    if (limits.mode !== "unbounded" && admittedCount > 2) invalid();
   }
   for (const entry of Object.values(value.invocations)) {
     const invocation = entry as Record<string, unknown>;

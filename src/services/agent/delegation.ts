@@ -172,6 +172,8 @@ interface AssistanceRecord {
   /** Elapsed wall time is persisted only while this batch is actually executing. */
   deadline: number;
   state: "children" | "continuation" | "continuation_running" | "finished";
+  /** The optional batch is terminal; continuation now belongs to the original Job. */
+  fallback?: "known-timeout";
   children: AssistanceChildState[];
   finalResult?: JobResult;
   finalResultHash?: string;
@@ -264,7 +266,8 @@ async function readAssistanceRecord(file: string, job: JobSpec): Promise<Assista
     || !["admitted", "denied"].includes(String(value.decision)) || !Array.isArray(value.bindings)
     || !Array.isArray(value.children) || !["children", "continuation", "continuation_running", "finished"].includes(String(value.state))
     || typeof value.identity !== "string" || typeof value.requestHash !== "string" || typeof value.reason !== "string"
-    || typeof value.deadline !== "number") throw new AssistanceInvariantError("Persisted assistance authorization is invalid");
+    || typeof value.deadline !== "number"
+    || (value.fallback !== undefined && value.fallback !== "known-timeout")) throw new AssistanceInvariantError("Persisted assistance authorization is invalid");
   const saved = value as unknown as AssistanceRecord;
   if (sha256(JSON.stringify(saved.request)) !== saved.requestHash) throw new AssistanceInvariantError("Persisted assistance request hash mismatch");
   if (saved.decision === "admitted" && (!saved.reservationId || !saved.invocationEstimate
@@ -278,6 +281,9 @@ async function readAssistanceRecord(file: string, job: JobSpec): Promise<Assista
     || decision.reservationId !== saved.reservationId
     || decision.binding !== sha256(JSON.stringify({ requestHash: saved.requestHash, bindings: saved.bindings, revision: saved.revision }))))) {
     throw new AssistanceInvariantError("Assistance authorization does not match the shared budget binding");
+  }
+  if (saved.fallback && (saved.decision !== "admitted" || !job.executionBudget?.state.reservations?.[saved.reservationId!]?.closed)) {
+    throw new AssistanceInvariantError("Assistance timeout fallback requires a settled batch");
   }
   return saved;
 }
@@ -492,7 +498,8 @@ async function executeNode(
 
   let response = !assistance && responsePath ? await readResponse(responsePath) : undefined;
   if (response) budget.remaining = Math.max(0, budget.remaining - response.jobsUsed);
-  let basePrompt = assistanceRecord
+  const fallbackPrompt = () => promptAsset("common.assistance-fallback", { final_result_path: job.resultPath ?? "由原任务指定" });
+  let basePrompt = assistanceRecord?.fallback ? fallbackPrompt() : assistanceRecord
     ? promptAsset("common.assistance-resume", { decision: assistanceRecord.decision, reason: assistanceRecord.reason,
       child_results: assistanceRecord.children.map((entry) => entry.result), final_result_path: job.resultPath ?? "由原任务指定" })
     : response
@@ -542,10 +549,39 @@ async function executeNode(
     }
     return result;
   };
+  const fallbackAfterKnownTimeout = async () => {
+    await assertBindings(job, assistanceRecord!);
+    const invocations = Object.values(job.executionBudget!.state.invocations)
+      .filter(entry => entry.reservationId === assistanceRecord!.reservationId);
+    if (!invocations.length || invocations.some(entry => entry.endedAt === undefined || entry.tokens === undefined || entry.interrupted)
+      || assistanceRecord!.children.some(entry => entry.state === "running")) {
+      pauseUncertain("协作调用终态用量无法核实；保留运行记录与用量占位并暂停，不能重复执行。");
+    }
+    await job.executionBudget!.closeReservation(assistanceRecord!.reservationId!);
+    // Discard any parent draft JobResult written by the interrupted optional
+    // continuation. Neither it nor Child reports are accepted fallback evidence.
+    if (job.resultPath) await rm(job.resultPath, { force: true });
+    await rm(requestPath!, { force: true });
+    assistanceRecord!.fallback = "known-timeout";
+    assistanceRecord!.state = "continuation";
+    delete assistanceRecord!.finalResult;
+    delete assistanceRecord!.finalResultHash;
+    await writeJsonAtomic(assistancePath!, assistanceRecord);
+    continuationReservation = undefined;
+    batchSignal = signal;
+    batchTimedOut = false;
+    basePrompt = fallbackPrompt();
+    await assistanceEvent("settled", "本批可选协作已超时并结束，真实用量与结果已保留，未接纳协作证据；由原 Agent 在剩余任务预算内继续。", assistanceRecord);
+  };
 
   while (true) {
     if (signal?.aborted) {
       const aborted: AgentJobResult = { status: "aborted", artifacts: [] };
+      if (assistanceRecord?.fallback) {
+        assistanceRecord.state = "finished";
+        assistanceRecord.finalResult = aborted;
+        await writeJsonAtomic(assistancePath!, assistanceRecord);
+      }
       await options.onJobCompleted?.(job, aborted);
       return aborted;
     }
@@ -575,7 +611,7 @@ async function executeNode(
         // into another admitted batch, and a legal refusal costs no repair.
         await rm(requestPath, { force: true });
         await assistanceEvent("denied", "本轮协作机会已使用，继续由当前 Agent 完成。", assistanceRecord);
-        basePrompt = promptAsset("common.assistance-resume", { decision: "denied", reason: "window-used", child_results: [],
+        basePrompt = assistanceRecord.fallback ? fallbackPrompt() : promptAsset("common.assistance-resume", { decision: "denied", reason: "window-used", child_results: [],
           final_result_path: job.resultPath ?? "由原任务指定" });
       } else {
         if (!assistanceRecord) {
@@ -674,12 +710,8 @@ async function executeNode(
               await options.onJobCompleted?.(job, aborted);
               return aborted;
             }
-            await job.executionBudget!.closeReservation(assistanceRecord.reservationId!);
-            assistanceRecord.state = "finished";
-            assistanceRecord.finalResult = { status: "aborted", artifacts: [], message: "本批协作超过授权时限，已取消并保留真实用量与结果。" };
-            await writeJsonAtomic(assistancePath, assistanceRecord);
-            await assistanceEvent("settled", assistanceRecord.finalResult.message!, assistanceRecord);
-            pauseUncertain(assistanceRecord.finalResult.message!, "time");
+            await fallbackAfterKnownTimeout();
+            continue;
           }
           await assertBindings(job, assistanceRecord);
           assistanceRecord.state = "continuation";
@@ -759,7 +791,8 @@ async function executeNode(
     }
 
     if (assistanceRecord?.state === "continuation") {
-      if (assistanceRecord.decision === "admitted" && !continuationReservation) {
+      if (assistanceRecord.fallback) await assertBindings(job, assistanceRecord);
+      if (assistanceRecord.decision === "admitted" && !assistanceRecord.fallback && !continuationReservation) {
         await assertBindings(job, assistanceRecord);
         const estimate = assistanceRecord.invocationEstimate!;
         continuationReservation = { reservationId: assistanceRecord.reservationId!, estimatedTokens: estimate.tokens,
@@ -772,7 +805,7 @@ async function executeNode(
       await writeJsonAtomic(assistancePath!, assistanceRecord);
     }
     const turnControlRoots = controlDir ? assistance ? [requestPath!] : [controlDir] : [];
-    const artifactRoots = assistanceRecord?.children.flatMap((entry) => entry.result?.artifacts ?? []) ?? [];
+    const artifactRoots = assistanceRecord?.fallback ? [] : assistanceRecord?.children.flatMap((entry) => entry.result?.artifacts ?? []) ?? [];
     const readRoots = assistance && controlDir ? await rootsWithoutDenied(job, job.readRoots, controlDir) : job.readRoots;
     const writeRoots = assistance && controlDir ? await rootsWithoutDenied(job, job.writeRoots, controlDir) : job.writeRoots;
     const turnJob: JobSpec = {
@@ -790,12 +823,17 @@ async function executeNode(
       ? await withTimeoutEvidence(turnJob, observed => executeTurn(observed, batchSignal))
       : await executeTurn(turnJob, batchSignal);
     if (batchTimedOut && assistanceRecord?.reservationId) {
-      await job.executionBudget!.closeReservation(assistanceRecord.reservationId);
-      assistanceRecord.state = "finished";
-      assistanceRecord.finalResult = turn;
-      await writeJsonAtomic(assistancePath!, assistanceRecord);
-      await assistanceEvent("settled", turn.message!, assistanceRecord);
-      pauseUncertain(turn.message!, "time");
+      if (signal?.aborted) {
+        await job.executionBudget!.closeReservation(assistanceRecord.reservationId);
+        assistanceRecord.state = "finished";
+        assistanceRecord.finalResult = { status: "aborted", artifacts: [] };
+        await writeJsonAtomic(assistancePath!, assistanceRecord);
+        await assistanceEvent("settled", "本批协作已取消，已发生用量与结果均保留。", assistanceRecord);
+        await options.onJobCompleted?.(job, assistanceRecord.finalResult);
+        return assistanceRecord.finalResult;
+      }
+      await fallbackAfterKnownTimeout();
+      continue;
     }
     if (requestPath && existsSync(requestPath)) continue;
 
@@ -818,7 +856,7 @@ async function executeNode(
       assistanceRecord.finalResult = result;
       if (job.resultPath && existsSync(job.resultPath)) assistanceRecord.finalResultHash = sha256(await readFile(job.resultPath));
       await writeJsonAtomic(assistancePath!, assistanceRecord);
-      await assistanceEvent("settled", "本批协作已结束，建议由原 Agent 合并，结果仍交给冻结评价验证。", assistanceRecord);
+      if (!assistanceRecord.fallback) await assistanceEvent("settled", "本批协作已结束，建议由原 Agent 合并，结果仍交给冻结评价验证。", assistanceRecord);
     }
     await options.onJobCompleted?.(job, result);
     return result;

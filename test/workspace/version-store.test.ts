@@ -193,6 +193,31 @@ test("VersionStore preserves source-index tracked ignored files without collecti
   assert.equal(await readFile(path.join(root, "fixtures/tracked.txt"), "utf8"), "working source\r\n");
 });
 
+test("checkpoint worktrees preserve tracked ignored bytes, isolate writes and reject arbitrary refs", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "flywheel-checkpoint-worktree-"));
+  await checkedProcess("git", ["init", root]);
+  await write(root, ".gitignore", "fixtures/\n.flywheel/\n");
+  await write(root, "fixtures/tracked.txt", "working bytes\r\n");
+  await write(root, "fixtures/cache.txt", "ignored cache\n");
+  await write(root, ".flywheel/goal.md", "private goal\n");
+  await checkedProcess("git", ["-C", root, "add", "--force", "fixtures/tracked.txt"]);
+  const versions = new VersionStore(projectAt(root));
+  const ref = await versions.createCheckpoint("baseline");
+  const subject = path.join(root, ".flywheel/subject");
+  for (const invalid of ["HEAD", "v1", "refs/heads/main", `${ref}/nested`, `${ref}~1`]) {
+    await assert.rejects(versions.createCheckpointWorktree(invalid, subject), /Invalid checkpoint ref/);
+  }
+  await versions.createCheckpointWorktree(ref, subject);
+  assert.equal(await readFile(path.join(subject, "fixtures/tracked.txt"), "utf8"), "working bytes\r\n");
+  await assert.rejects(readFile(path.join(subject, "fixtures/cache.txt")));
+  await assert.rejects(readFile(path.join(subject, ".flywheel/goal.md")));
+  assert.deepEqual((await versions.worktreeChanges(subject)).files, []);
+  await write(subject, "fixtures/tracked.txt", "evaluator mutation\n");
+  assert.deepEqual((await versions.worktreeChanges(subject)).files, ["fixtures/tracked.txt"]);
+  await versions.assertCheckpoint(ref);
+  assert.equal(await versions.hasTag("baseline"), false);
+});
+
 test("VersionStore does not inherit tracking provenance from an enclosing repository", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "flywheel-version-parent-index-"));
   await checkedProcess("git", ["init", parent]);

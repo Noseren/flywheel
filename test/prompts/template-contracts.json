@@ -17,6 +17,9 @@
     "final_result_path",
     "request_path"
   ],
+  "common.assistance-fallback": [
+    "final_result_path"
+  ],
   "common.assistance-resume": [
     "child_results",
     "decision",
@@ -45,13 +48,13 @@
     "remaining_depth",
     "request_path"
   ],
-  "common.delegation-child-repair": [
-    "issues",
+  "common.delegation-child": [
+    "child_task",
     "output_workspace",
     "result_path"
   ],
-  "common.delegation-child": [
-    "child_task",
+  "common.delegation-child-repair": [
+    "issues",
     "output_workspace",
     "result_path"
   ],
@@ -253,6 +256,25 @@
     "report_path",
     "result_path"
   ],
+  "routing.component": [
+    "component",
+    "context_path",
+    "evidence_ids",
+    "public_files",
+    "question",
+    "report_path",
+    "result_path",
+    "task"
+  ],
+  "routing.router": [
+    "allowed_components",
+    "context_path",
+    "decision_path",
+    "evidence_ids",
+    "public_files",
+    "result_path",
+    "window"
+  ],
   "run.assess-target.generate": [
     "current_version",
     "decision_path",
@@ -324,15 +346,15 @@
     "selection_path",
     "task_path"
   ],
-  "run.refine.worktree-repair": [
-    "review_path",
-    "worktree_path"
-  ],
   "run.refine.worktree": [
     "change_scope",
     "hypothesis_id",
     "proposal_path",
     "task_path",
+    "worktree_path"
+  ],
+  "run.refine.worktree-repair": [
+    "review_path",
     "worktree_path"
   ],
   "run.review.candidate": [
@@ -343,6 +365,22 @@
     "review_path",
     "task_path",
     "worktree_path"
+  ],
+  "run.routing.select": [
+    "candidates",
+    "combination_allowed",
+    "goal_path",
+    "report_path",
+    "result_path"
+  ],
+  "run.routing.target-assess": [
+    "evidence_paths",
+    "goal_path",
+    "repair",
+    "report_path",
+    "result_path",
+    "tree_hash",
+    "version"
   ],
   "run.steering.anchor": [
     "attestation_kind",

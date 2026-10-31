@@ -167,12 +167,14 @@ export class CodexAgentAdapter implements AgentAdapter {
     const reservation = reservationId ? job.executionBudget?.state.reservations?.[reservationId] : undefined;
     const boundedAssistance = job.invocationReservation?.estimateClass === "assistance"
       && reservation?.kind === "assistance" && !reservation.closed;
-    const effectiveEffort = boundedAssistance && !this.explicitReasoningEffort ? "low" : this.modelReasoningEffort;
+    const boundedRouting = job.invocationReservation?.estimateClass === "routing"
+      && reservation?.kind === "required" && !reservation.closed;
+    const effectiveEffort = (boundedAssistance || boundedRouting) && !this.explicitReasoningEffort ? "low" : this.modelReasoningEffort;
     await job.onEvent?.({ sdkEvent: "codex.execution-profile", model: this.model,
       requestedReasoningEffort: this.modelReasoningEffort, effectiveReasoningEffort: effectiveEffort,
-      source: this.explicitReasoningEffort ? "explicit" : boundedAssistance ? "assistance-default" : "default",
+      source: this.explicitReasoningEffort ? "explicit" : boundedAssistance ? "assistance-default" : boundedRouting ? "routing-default" : "default",
       boundedAssistance, transport: this.useSdk ? "sdk" : "app-server",
-      ...(boundedAssistance ? { reservationId } : {}),
+      ...(boundedAssistance || boundedRouting ? { reservationId } : {}),
     });
 
     if (!this.useSdk) {

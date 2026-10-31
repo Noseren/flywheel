@@ -10,7 +10,8 @@ import { defaultProcessService } from "../../services/process/index.ts";
 import { openExecutionBudget } from "../../session/execution-budget-store.ts";
 import type { ExecutionBudget, ExecutionBudgetLimits } from "../../session/execution-budget.ts";
 import { createCompactRunExecutionPolicy } from "./policy/compact.ts";
-import { COMPACT_ASSISTANCE_REVISION, compactPolicyJob } from "../compact-assistance.ts";
+import { isCompactAssistanceRevision, compactPolicyJob } from "../compact-assistance.ts";
+import { COMPONENT_ROUTING_REVISION } from "../component-routing-revision.ts";
 
 import type { AgentService } from "../../services/agent/protocol.ts";
 import { executePersistentAgentJob } from "../../services/agent/session.ts";
@@ -207,7 +208,25 @@ export class RunCapability implements Capability<RunPolicyServices, RunState, Ru
       if (request.type === "command" && ["steering.propose", "steering.resolve", "policy.activate"].includes((request.command as { type: string }).type)) {
         throw new Error("Compact tasks freeze their goal and evaluation; prepare a new task to change them. Existing history is preserved.");
       }
-      if ((request.type === "resume" || request.type === "start") && state.status === "paused"
+      if (state.assistanceRevision === COMPONENT_ROUTING_REVISION
+        && (request.type === "resume" || request.type === "start") && state.status === "paused"
+        && state.execution.currentOperationId === "assess_target"
+        && state.compact?.routing?.assessment?.decision === "achieved") {
+        state.compact.routing.next = "route_r3";
+        state.compact.routing.stopRequested = false;
+        state.execution.currentOperationId = "route_r3";
+        delete state.execution.lastOutcome;
+        state.execution.operationState = {};
+      } else if (state.assistanceRevision === COMPONENT_ROUTING_REVISION
+        && (request.type === "resume" || request.type === "start") && state.status === "paused"
+        && state.execution.currentOperationId === "assess_target"
+        && state.compact?.routing?.assessment?.decision === "not_achieved") {
+        // Validate the cached binding before routing an explicitly resumed negative verdict.
+        state.compact.routing.stopRequested = false;
+        delete state.execution.lastOutcome;
+        state.execution.operationState = {};
+      } else if (state.assistanceRevision !== COMPONENT_ROUTING_REVISION
+        && (request.type === "resume" || request.type === "start") && state.status === "paused"
         && !state.compact?.candidate && state.compact?.baselineResultPath
         && ["verify", "retain"].includes(state.execution.currentOperationId ?? "")) {
         state.execution.currentOperationId = "optimize";
@@ -301,8 +320,8 @@ export class RunCapability implements Capability<RunPolicyServices, RunState, Ru
           sessions: current.agentSessions ??= {},
           concurrency: this.concurrency,
           executionBudget: this.executionBudget,
-          ...(current.workflow === "compact" && !(current.assistanceRevision === COMPACT_ASSISTANCE_REVISION
-            && job.operation === "optimize" && job.assistance?.revision === COMPACT_ASSISTANCE_REVISION)
+          ...(current.workflow === "compact" && !(isCompactAssistanceRevision(current.assistanceRevision)
+            && job.operation === "optimize" && job.assistance?.revision === current.assistanceRevision)
             ? { delegation: "disabled" as const } : {}),
           guidance: typeof current.execution.operationState.managerGuidance === "string"
             ? current.execution.operationState.managerGuidance : undefined,
@@ -423,7 +442,9 @@ export class RunCapability implements Capability<RunPolicyServices, RunState, Ru
     const adminCompleted = ["steering.propose", "steering.resolve", "policy.activate"].includes(operationId)
       && !state.pendingRunCommand;
     const compactPauseCompleted = state.workflow === "compact" && outcome.status === "paused"
-      && ["verify", "retain"].includes(operationId) && !state.compact?.candidate;
+      && ((["verify", "retain"].includes(operationId) && !state.compact?.candidate)
+        || (state.assistanceRevision === COMPONENT_ROUTING_REVISION
+          && ["route_r3", "route_r4", "assess_target", "review_candidate", "select_candidates"].includes(operationId)));
     if ((outcome.status === "completed" || adminCompleted || compactPauseCompleted) && state.operationTransaction) {
       const checkpoint = state.operationTransaction.checkpoint;
       delete state.operationTransaction;

@@ -154,6 +154,10 @@ export class FlywheelSession {
   }
 
   async history(): Promise<SessionEvent[]> {
+    // Capability forwarding queues its durable Session event synchronously.
+    // A reader must observe all events accepted before this read, including
+    // usage events whose append has not completed yet.
+    await this.eventQueue;
     try {
       const content = await readFile(this.eventsPath, "utf8");
       return content.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as SessionEvent);

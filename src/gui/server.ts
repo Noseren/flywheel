@@ -32,6 +32,7 @@ export interface GuiTimelineEntry {
   interactionRevision?: number;
   requester?: Interaction["requestedBy"];
   officialTitle?: string;
+  officialSummary?: string;
   streamKey?: string;
   sdkEvent?: string;
   category: "text" | "agent" | "tool" | "command" | "file" | "runtime" | "error";
@@ -409,7 +410,7 @@ function wireNode(node: ExecutionNode): GuiNode {
 
 function wireEntry(entry: GuiTimelineEntry): GuiTimelineEntry {
   const evidence = officialEvidence([entry])[0];
-  if (evidence) entry = { ...entry, officialTitle: evidence.title };
+  if (evidence) entry = { ...entry, officialTitle: evidence.title, ...(evidence.summary ? { officialSummary: evidence.summary } : {}) };
   if (Buffer.byteLength(JSON.stringify(entry)) <= 4096) return entry;
   const raw = entry.raw as { type?: string; version?: string };
   return { ...entry, actor: entry.actor.slice(0, 160), title: entry.title.slice(0, 256), body: entry.body?.slice(0, 1024),

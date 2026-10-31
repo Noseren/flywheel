@@ -1,7 +1,10 @@
+import path from "node:path";
 import { initContractDir, validateInitContract, type ValidatedInitContract } from "../artifacts.ts";
 import { initGoalPath, proposalDocumentPath, proposalPath } from "../proposal.ts";
 import { CompactVerificationNeedsInput, parseVerificationResult, readVerificationConfig, runCompactVerification, validateVerificationEvidence, type VerificationResult } from "../../compact-evaluation.ts";
-import { COMPACT_ASSISTANCE_REVISION, compactAssistanceGuidance, requiredVerificationWork } from "../../compact-assistance.ts";
+import { isCompactAssistanceRevision, compactAssistanceGuidance, requiredVerificationWork } from "../../compact-assistance.ts";
+import { routeBeforePreparation, routePreparedDraft } from "./compact-routing.ts";
+import { COMPONENT_ROUTING_REVISION } from "../../component-routing-revision.ts";
 import { AgentExecutionError } from "../../../services/artifact/index.ts";
 import { ExecutionBudgetExhausted } from "../../../session/execution-budget.ts";
 import type { InitOperation, InitServices, InitState } from "../protocol.ts";
@@ -61,10 +64,10 @@ export const prepareCompactOperation: InitOperation = async ({ services, state, 
   const baselineResultPath = services.workspace.join(outputDir, "result.json");
   const preparingDraft = state.inspection.status !== "ready"
     && !await services.workspace.exists(services.workspace.join(services.workspace.flywheelDir, "init", "manifest.json"));
-  const assistanceEnabled = state.assistanceRevision === COMPACT_ASSISTANCE_REVISION && !!services.executionBudget;
+  const assistanceEnabled = isCompactAssistanceRevision(state.assistanceRevision) && !!services.executionBudget;
   const requiredReservationId = `verification:init:${state.capabilityRunId}`;
   const assistance = assistanceEnabled ? {
-    revision: COMPACT_ASSISTANCE_REVISION, windowId: `prepare:${state.capabilityRunId}`, requiredReservationId,
+    revision: state.assistanceRevision!, windowId: `prepare:${state.capabilityRunId}`, requiredReservationId,
     resolveRequiredReservationId: async () => {
       let contract: ValidatedInitContract;
       try { contract = await validateInitContract(services.projectRoot); } catch { return undefined; }
@@ -100,8 +103,14 @@ export const prepareCompactOperation: InitOperation = async ({ services, state, 
       assistance_guidance: compactAssistanceGuidance(assistanceEnabled),
     }),
   };
+  let routeAdvice = "";
   let prepared: { contract: ValidatedInitContract; verification: VerificationResult };
-  try { prepared = await services.artifact.run({
+  try {
+    if (!state.answers.preparationBaselineSha256) {
+      try { routeAdvice = await routeBeforePreparation(services, state, signal); }
+      finally { await guard(); }
+    }
+    prepared = await services.artifact.run({
     artifactId: "init-compact-preparation", operationId: "prepare_compact", job: "preparation",
     operationState: state.execution.operationState, maxRepairs: 1, signal,
     present: async () => await services.workspace.exists(resultPath),
@@ -109,6 +118,7 @@ export const prepareCompactOperation: InitOperation = async ({ services, state, 
       // A mutation of the subject or approved input is a boundary failure, not repairable output.
       if (!preparingDraft || signal.aborted || error instanceof ExecutionBudgetExhausted
         || (error instanceof Error && error.name === "AbortError")
+        || (error instanceof Error && error.name === "ComponentRoutingError")
         || error instanceof CompactVerificationNeedsInput
         || (error instanceof Error && /checkpoint|Approved goal|proposal changed|frozen preparation/i.test(error.message))) return undefined;
       // This failure is created only after the draft and actual verification envelope,
@@ -129,7 +139,7 @@ export const prepareCompactOperation: InitOperation = async ({ services, state, 
             project_root: services.projectRoot, goal_path: initGoalPath(services.projectRoot),
             proposal_path: proposalDocumentPath(services.projectRoot), proposal_ref_path: proposalPath(services.projectRoot),
             contract_dir: contractDir, manifest_path: services.workspace.join(contractDir, "manifest.json"), result_path: resultPath,
-            issues: mode === "generate" ? "None. Prepare the package." : JSON.stringify(issues),
+            issues: mode === "generate" ? (routeAdvice || "None. Prepare the package.") : JSON.stringify(issues),
             assistance_guidance: compactAssistanceGuidance(assistanceEnabled),
           }),
         }, signal);
@@ -139,10 +149,26 @@ export const prepareCompactOperation: InitOperation = async ({ services, state, 
       const execution = await services.artifact.readJobResult(job);
       if (execution.status !== "completed") throw services.artifact.jobFailure("init-preparation", execution.message ?? "Preparation failed",
         execution.status === "needs_input" ? "needs_input" : "failed");
-      const contract = await validateInitContract(services.projectRoot);
+      let contract = await validateInitContract(services.projectRoot);
       if (contract.workflow !== "compact") throw services.artifact.invalid("preparation.workflow", "Preparation requires compact manifest");
       if (services.workspace.resolve(services.projectRoot, state.proposal!.artifactPath) !== contract.artifactPath) {
         throw services.artifact.invalid("preparation.artifact", "Preparation changed the approved artifact path");
+      }
+      if (state.assistanceRevision === COMPONENT_ROUTING_REVISION && state.answers.preparationBaselineSha256
+        && JSON.stringify(await compactPreparationInputs(services, contract)) !== state.answers.preparationInputs) {
+        throw new Error("Frozen preparation assets changed after the routed baseline; explicitly prepare a new contract");
+      }
+      if (!state.answers.preparationBaselineSha256) {
+        try { contract = await routePreparedDraft({ services, state, contract, job, signal, guard }); }
+        catch (error) {
+          // Routing/absorption is a persisted independent operation. Unknown
+          // terminal state or input tampering must not trigger draft regeneration.
+          if (error instanceof Error && !(error instanceof ExecutionBudgetExhausted) && !(error instanceof AgentExecutionError)) error.name = "ComponentRoutingError";
+          throw error;
+        } finally { await guard(); }
+        if (services.workspace.resolve(services.projectRoot, state.proposal!.artifactPath) !== contract.artifactPath) {
+          throw new Error("Approved artifact changed during component absorption");
+        }
       }
       const byId = new Map(contract.files.map(file => [file.id, services.workspace.resolve(services.projectRoot, file.path)]));
       const inputs = JSON.stringify(await compactPreparationInputs(services, contract));
@@ -157,6 +183,15 @@ export const prepareCompactOperation: InitOperation = async ({ services, state, 
           throw new Error("Frozen preparation evidence changed during recovery");
         }
       } else {
+        // Exercise the same source-only layout as an optimization candidate.
+        // Contract roles stay at their explicit absolute paths outside this tree.
+        const subjectRoot = services.workspace.join(services.workspace.runtimeDir, "preparation-subject", state.capabilityRunId);
+        await services.version.createCheckpointWorktree(checkpoint, subjectRoot);
+        const assertSubject = async () => {
+          const changes = await services.version.worktreeChanges(subjectRoot);
+          if (changes.files.length) throw new Error(`Evaluator changed preparation subject checkpoint: ${changes.files.join(", ")}`);
+        };
+        await assertSubject();
         try {
           verification = await runCompactVerification({
             projectRoot: services.projectRoot,
@@ -166,11 +201,12 @@ export const prepareCompactOperation: InitOperation = async ({ services, state, 
             process: services.process, agent: services.agent, executionBudget: services.executionBudget, signal,
             ...(assistanceEnabled ? { requiredReservationId } : {}),
             emit: services.emit,
-            request: { schemaVersion: 1, mode: "baseline", subjectRoot: services.projectRoot,
-              artifactPath: contract.artifactPath, outputDir, goalPath: initGoalPath(services.projectRoot),
+            request: { schemaVersion: 1, mode: "baseline", subjectRoot,
+              artifactPath: services.workspace.join(subjectRoot, path.relative(services.projectRoot, contract.artifactPath)), outputDir, goalPath: initGoalPath(services.projectRoot),
               ...(byId.has("train") ? { trainPath: byId.get("train")!, holdoutPath: byId.get("holdout")! } : {}) },
           });
         } finally {
+          await assertSubject();
           await guard();
           const after = await validateInitContract(services.projectRoot);
           if (JSON.stringify(after.files) !== JSON.stringify(contract.files) || after.manifestSha256 !== contract.manifestSha256) {

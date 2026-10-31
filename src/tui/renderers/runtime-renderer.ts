@@ -2,6 +2,7 @@ import type { Writable } from "node:stream";
 
 import type { RunEvent } from "../../capabilities/run/protocol.ts";
 import { AgentActivityRenderer } from "./agent-renderer.ts";
+import { targetSummaryText } from "../../capabilities/run/target-summary.ts";
 
 const operationLabels: Record<string, string> = {
   bootstrap: "载入项目",
@@ -12,6 +13,11 @@ const operationLabels: Record<string, string> = {
   tasking: "生成样本输出",
   evaluate: "评价本轮结果",
   assess_target: "判断目标是否达成",
+  route_r3: "选择本轮优化方式",
+  route_r4: "核对结果与下一步",
+  review_candidate: "独立检查候选实现",
+  collect_candidate: "汇总候选评价",
+  select_candidates: "比较已验证候选",
   propose: "聚合分析并提出建议",
   refine: "实现并验证候选",
   select: "选择候选",
@@ -50,6 +56,9 @@ export class RuntimeEventRenderer {
       output.write(`\n→ ${event.version} · ${operationLabel(event.operation)}\n`);
     } else if (event.type === "operation.completed") {
       output.write(`  ✓ ${operationLabel(this.startedOperation ?? event.operation)}完成\n`);
+      const result = event.data?.result as Record<string, unknown> | undefined;
+      const summary = event.data?.operationId === "assess_target" ? targetSummaryText(result?.userSummary) : undefined;
+      if (summary) output.write(`${summary}\n`);
       this.startedOperation = undefined;
     } else if (event.type === "job.started") output.write(`  → ${jobLabel(event.data?.job)}\n`);
     else if (event.type === "job.event") this.activities.render(event, output);

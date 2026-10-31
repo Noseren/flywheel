@@ -1,6 +1,7 @@
 import path from "node:path";
 import { realpath, stat } from "node:fs/promises";
 import type { GuiTimelineEntry } from "./server.ts";
+import { targetSummaryText } from "../capabilities/run/target-summary.ts";
 
 export interface GuiEvidence {
   id: string;
@@ -9,6 +10,7 @@ export interface GuiEvidence {
   version?: string;
   timestamp: string;
   file?: string;
+  summary?: string;
 }
 
 /** A read-only projection of trusted lifecycle outcomes, never Agent prose. */
@@ -40,7 +42,8 @@ export function officialEvidence(entries: readonly GuiTimelineEntry[]): GuiEvide
     const version = typeof event.version === "string" ? event.version : undefined;
     if (data.operationId === "assess_target") {
       const title = new Map([["achieved", "目标已达成"], ["not_achieved", "目标尚未达成"], ["inconclusive", "现有证据不足以判定"]]).get(String(result.assessment));
-      if (title && typeof result.reportPath === "string") evidence.push({ ...base, title, version, file: result.reportPath });
+      const summary = targetSummaryText(result.userSummary);
+      if (title && typeof result.reportPath === "string") evidence.push({ ...base, title, version, file: result.reportPath, ...(summary ? { summary } : {}) });
     } else if (data.operationId === "evaluate" && typeof result.evaluationReportPath === "string") {
       evidence.push({ ...base, title: "正式版本评价已完成（不代表目标达成）", version, file: result.evaluationReportPath });
     } else if (data.operationId === "select" && result.action === "promote" && typeof result.promotedVersion === "string") {

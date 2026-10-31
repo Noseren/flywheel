@@ -1,6 +1,6 @@
 import { defineExecutionPolicy, type ExecutionPolicy } from "../../session/policy.ts";
 import { prepareCompactOperation } from "./policy/compact.ts";
-import { COMPACT_ASSISTANCE_REVISION } from "../compact-assistance.ts";
+import { isCompactAssistanceRevision } from "../compact-assistance.ts";
 import type {
   InitCommand,
   InitOperationResult,
@@ -30,7 +30,7 @@ export function createDefaultInitExecutionPolicy(assistanceRevision?: string): E
 > {
   return defineExecutionPolicy({
     id: "flywheel.init",
-    revision: assistanceRevision === COMPACT_ASSISTANCE_REVISION ? COMPACT_ASSISTANCE_REVISION : DEFAULT_INIT_POLICY_REVISION,
+    revision: isCompactAssistanceRevision(assistanceRevision) ? assistanceRevision : DEFAULT_INIT_POLICY_REVISION,
     requires: ["agent", "artifact", "version", "workspace", "state", "prompt", "process"],
     operations: {
       inspect: inspectOperation,

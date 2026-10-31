@@ -124,6 +124,25 @@ test("Codex app-server sends the same bounded assistance profile on Child and re
   }
 });
 
+test("routing uses low effort only with its live required reservation and honors explicit effort", async () => {
+  for (const kind of ["live", "closed", "absent", "explicit"]) {
+    const budget = new ExecutionBudget(createExecutionBudgetState(), async () => {});
+    if (kind !== "absent") await budget.reserveRequiredWork("router", { tokens: 1000, activeMs: 1000, source: "test" });
+    if (kind === "closed") await budget.closeReservation("router");
+    const expected = kind === "live" ? "low" : "medium";
+    const server = fakeServer("complete", expected, "same-model");
+    const events: Record<string, unknown>[] = [];
+    const result = await new CodexAgentAdapter({ model: "same-model", appServerLauncher: server.launch,
+      ...(kind === "explicit" ? { modelReasoningEffort: "medium" as const } : {}) }).run({ ...job,
+      executionBudget: budget, invocationReservation: { reservationId: "router", estimateClass: "routing" },
+      onEvent: event => { events.push(event); } });
+    assert.equal(result.success, true, result.error);
+    const profile = events.find(event => event.sdkEvent === "codex.execution-profile")!;
+    assert.equal(profile.effectiveReasoningEffort, expected);
+    assert.equal(profile.source, kind === "live" ? "routing-default" : kind === "explicit" ? "explicit" : "default");
+  }
+});
+
 test("Codex app-server coalesces a tool output flood without batching real agent replies or losing bytes", async () => {
   const events: Record<string, any>[] = [];
   const result = await new CodexAgentAdapter({ appServerLauncher: fakeServer("flood").launch })

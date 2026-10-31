@@ -256,6 +256,7 @@ async function copy(text, trigger) {
   setTimeout(() => { if (trigger.isConnected) trigger.textContent = "复制输出"; }, 6000);
 }
 function activityText(e) {
+  if (e.officialSummary) return e.officialSummary;
   const item = e.raw?.data?.item;
   if (item?.type === "command_execution") return [item.command, item.aggregated_output, item.exit_code !== undefined ? "退出码: " + item.exit_code : ""].filter(v => v !== undefined && v !== "").join("\n\n");
   return JSON.stringify(e.raw ?? e, null, 2);
@@ -280,7 +281,14 @@ function entryCard(entry, main = false) {
     d.append(summary);
     if (type === "error") d.append(el("p", "event-preview", entry.body || entry.title));
     if (item?.command) d.append(el("code", "event-preview", item.command));
-    if (type === "result") d.append(button("查看正式证据", evidence, "agent-link"));
+    if (type === "result") {
+      if (entry.officialSummary) {
+        const preview = el("p", "target-summary", entry.officialSummary);
+        preview.style.whiteSpace = "pre-wrap";
+        d.append(preview);
+      }
+      d.append(button("查看正式证据", evidence, "agent-link"));
+    }
     d.addEventListener("toggle", async () => {
       if (!d.open || d.dataset.loaded) return;
       d.dataset.loaded = "1";
@@ -651,6 +659,7 @@ async function evidence() {
     contents.push(el("h3", "", "正式结果"));
     for (const result of context.results) {
       const item = el("div", "evidence-record"); item.append(el("p", "", result.title || result.type || "正式记录"), el("small", "muted", [result.version, time(result.timestamp)].filter(Boolean).join(" · ")));
+      if (result.summary) { const summary = el("p", "target-summary", result.summary); summary.style.whiteSpace = "pre-wrap"; item.append(summary); }
       if (result.hasFile) { const a = el("a", "", "打开证据"); a.href = url("/api/evidence", { id: result.id }); a.target = "_blank"; a.rel = "noopener"; item.append(a); }
       contents.push(item);
     }

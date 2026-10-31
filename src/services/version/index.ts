@@ -288,6 +288,17 @@ export class VersionStore {
   async createWorktree(tag: string, destination: string): Promise<void> {
     await this.configureSnapshotScope();
     if (!await this.hasTag(tag)) throw new Error(`Missing snapshot tag: ${tag}`);
+    await this.createRefWorktree(tag, destination);
+  }
+
+  /** Materialize an existing exact checkpoint without creating a formal version. */
+  async createCheckpointWorktree(ref: string, destination: string): Promise<void> {
+    if (!/^refs\/flywheel\/checkpoints\/[A-Za-z0-9._-]+$/.test(ref)) throw new Error(`Invalid checkpoint ref: ${ref}`);
+    await this.configureSnapshotScope();
+    await this.createRefWorktree(ref, destination);
+  }
+
+  private async createRefWorktree(tag: string, destination: string): Promise<void> {
     const expected = (await checkedProcess("git", [
       `--git-dir=${this.historyDir}`, "rev-parse", `${tag}^{commit}`,
     ])).trim();

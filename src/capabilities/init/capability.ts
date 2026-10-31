@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { COMPACT_ASSISTANCE_REVISION, compactPolicyJob } from "../compact-assistance.ts";
+import { isCompactAssistanceRevision, compactPolicyJob } from "../compact-assistance.ts";
+import { COMPONENT_ROUTING_REVISION } from "../component-routing-revision.ts";
 import { openExecutionBudget } from "../../session/execution-budget-store.ts";
 import type { ExecutionBudget, ExecutionBudgetLimits } from "../../session/execution-budget.ts";
 import path from "node:path";
@@ -73,8 +74,8 @@ function createInitServices(options: {
       state.workflow === "compact" ? compactPolicyJob(job, state.assistanceRevision, "init.prepare_compact") : job, {
       capabilityId: "init",
       executionBudget: options.executionBudget,
-      delegation: state.workflow === "compact" && !(state.assistanceRevision === COMPACT_ASSISTANCE_REVISION
-        && job.operation === "init.prepare_compact" && job.assistance?.revision === COMPACT_ASSISTANCE_REVISION) ? "disabled" : undefined,
+      delegation: state.workflow === "compact" && !(isCompactAssistanceRevision(state.assistanceRevision)
+        && job.operation === "init.prepare_compact" && job.assistance?.revision === state.assistanceRevision) ? "disabled" : undefined,
       operationId: currentInitOperation(state),
       status: state.status,
       sessions: state.agentSessions ??= {},
@@ -184,7 +185,7 @@ export class InitCapability implements Capability<InitServices, InitState, InitC
   }
 
   async createState(): Promise<InitState> {
-    this.assistancePolicyRevision = this.workflow === "compact" ? COMPACT_ASSISTANCE_REVISION : undefined;
+    this.assistancePolicyRevision = this.workflow === "compact" ? COMPONENT_ROUTING_REVISION : undefined;
     if (this.workflow === "compact") this.executionBudget = await openExecutionBudget(this.projectRoot, this.budgetLimits);
     const timestamp = new Date().toISOString();
     if (this.confirmationMode !== "brief" || this.initialGoal) {
@@ -192,7 +193,7 @@ export class InitCapability implements Capability<InitServices, InitState, InitC
     }
     return {
       schemaVersion: 3,
-      ...(this.workflow === "compact" ? { workflow: "compact" as const, assistanceRevision: COMPACT_ASSISTANCE_REVISION } : {}),
+      ...(this.workflow === "compact" ? { workflow: "compact" as const, assistanceRevision: COMPONENT_ROUTING_REVISION } : {}),
       capabilityRunId: randomUUID(),
       projectRoot: this.projectRoot,
       status: "running",

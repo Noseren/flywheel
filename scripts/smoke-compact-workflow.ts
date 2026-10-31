@@ -21,7 +21,7 @@ import { CapabilityRegistry, FlywheelSession } from "../src/session/session.ts";
 import { buildUsageLedger } from "../src/session/usage-ledger.ts";
 import { runSessionTerminal } from "../src/tui/session-terminal.ts";
 import { startSessionGuiServer, type SessionGuiServer } from "../src/gui/server.ts";
-import type { ExecutionBudgetState } from "../src/session/execution-budget.ts";
+import { UNBOUNDED_EXECUTION_BUDGET_LIMITS, type ExecutionBudgetState } from "../src/session/execution-budget.ts";
 import type { SessionEvent } from "../src/session/protocol.ts";
 
 const argumentsList = process.argv.slice(2);
@@ -34,6 +34,12 @@ const real = argumentsList.includes("--run-real");
 const singleAgentControl = argumentsList.includes("--single-agent-control");
 const prepareOnly = argumentsList.includes("--prepare-only");
 const confirmationChoice = argumentsList.includes("--confirmation-choice");
+// Experiments record honest terminal outcomes, including coverage questions and
+// budget pauses; they do not reinterpret these as successful optimization.
+const observeOutcome = argumentsList.includes("--observe-outcome");
+const unbounded = argumentsList.includes("--unbounded");
+const allowPassingBaseline = argumentsList.includes("--allow-passing-baseline");
+if (allowPassingBaseline && !observeOutcome) throw new Error("--allow-passing-baseline requires --observe-outcome; zero-candidate outcomes are observational only");
 if (!real && !prepareOnly) {
   console.log("No model calls. Use --prepare-only to inspect isolated fixtures, or --run-real to execute explicit acceptance.");
   process.exit(0);
@@ -46,6 +52,8 @@ const model = option("--model", "gpt-6.1-sol");
 const limitMs = Number(option("--max-active-ms", String(6 * 60_000)));
 const maxAttempts = Number(option("--max-attempts", "1"));
 const tokenLimit = Number(option("--max-tokens", "200000"));
+const publicTimeoutMs = Number(option("--public-timeout-ms", "200000"));
+if (!Number.isSafeInteger(publicTimeoutMs) || publicTimeoutMs <= 0) throw new Error("--public-timeout-ms must be a positive safe integer");
 if (!Number.isSafeInteger(tokenLimit) || tokenLimit <= 0) throw new Error("--max-tokens must be a positive safe integer");
 if (!Number.isSafeInteger(limitMs) || limitMs <= 0) throw new Error("--max-active-ms must be a positive safe integer");
 if (!Number.isSafeInteger(maxAttempts) || maxAttempts <= 0) throw new Error("--max-attempts must be a positive safe integer");
@@ -54,7 +62,7 @@ const publicTestArgs = ["--test", "--test-reporter=tap", option("--public-test-f
 const mutableRootOption = option("--mutable-root", fixtureSource ? "src" : "math.mjs");
 if (!mutableRootOption || path.isAbsolute(mutableRootOption) || mutableRootOption.split(/[\\/]/).includes("..")) throw new Error("--mutable-root must be a project-relative path");
 const mutableRoot = path.normalize(mutableRootOption);
-const budgetLimits = { candidateAttempts: maxAttempts, activeMs: limitMs, knownTokens: tokenLimit };
+const budgetLimits = unbounded ? { ...UNBOUNDED_EXECUTION_BUDGET_LIMITS } : { candidateAttempts: maxAttempts, activeMs: limitMs, knownTokens: tokenLimit };
 const base = path.resolve(option("--output-root", ".test-runs/compact-workflow"));
 await mkdir(base, { recursive: true });
 
@@ -148,7 +156,7 @@ async function frozenInputs(root: string, relative = ""): Promise<Array<{ file: 
 }
 
 function publicCheck(root: string) {
-  const check = spawnSync(process.execPath, publicTestArgs, { cwd: root, encoding: "utf8", timeout: 200_000, maxBuffer: 2 * 1024 * 1024 });
+  const check = spawnSync(process.execPath, publicTestArgs, { cwd: root, encoding: "utf8", timeout: publicTimeoutMs, maxBuffer: 2 * 1024 * 1024 });
   return { status: check.status, signal: check.signal, error: check.error?.message,
     stdout: check.stdout, stderr: check.stderr,
     tests: Number(/^# tests (\d+)$/m.exec(check.stdout ?? "")?.[1] ?? 0),
@@ -159,7 +167,7 @@ function publicCheck(root: string) {
 async function run(surface: "tui" | "gui") {
   const { directory, root } = await prepareFixture(surface);
   const reportPath = path.join(directory, "acceptance.json");
-  const report: Record<string, unknown> = { surface, root, fixtureSource, runReal: real, model, budgetLimits, confirmationChoice, singleAgentControl,
+  const report: Record<string, unknown> = { surface, root, fixtureSource, runReal: real, model, budgetLimits, unbounded, allowPassingBaseline, observeOutcome, overallTimeoutMs: unbounded ? null : limitMs, confirmationChoice, singleAgentControl,
     screenInteraction: false, entry: surface === "tui" ? "runSessionTerminal readline + Session command/event" : "startSessionGuiServer HTTP command/state/receipt + Session event",
     originalGoalLength: goal.length, startedAt: new Date().toISOString() };
   if (prepareOnly) {
@@ -168,11 +176,25 @@ async function run(surface: "tui" | "gui") {
     return true;
   }
 
+  // This experiment fixture explicitly declares its prepared Docker image.
+  // Check the actual host before spending model calls; nested test assertions
+  // alone cannot distinguish a missing Docker executable from a failing target.
+  const environment = await optionalJson<{ image?: unknown }>(path.join(root, "test-environment.json"));
+  if (typeof environment?.image === "string") {
+    const docker = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"],
+      { encoding: "utf8", timeout: 20_000, maxBuffer: 128 * 1024 });
+    report.hostPreflight = { docker: { status: docker.status, error: docker.error?.message,
+      serverVersion: docker.stdout?.trim(), stderr: docker.stderr?.slice(-2000) }, modelCalls: 0 };
+    await writeFile(reportPath, JSON.stringify(report, null, 2) + "\n");
+    assert.ok(!docker.error && docker.status === 0 && docker.stdout.trim(),
+      `Docker host preflight failed before model calls: ${docker.error?.message ?? docker.stderr}`);
+  }
   const preservedFiles = await frozenInputs(root);
   const baselinePublicCheck = publicCheck(root);
   report.baselinePublicCheck = baselinePublicCheck;
   assert.equal(baselinePublicCheck.error, undefined);
-  assert.ok(baselinePublicCheck.tests > 0 && baselinePublicCheck.failed > 0, "Fixture must have real failing behavioral tests");
+  assert.ok(baselinePublicCheck.tests > 0, "Fixture must have real behavioral tests");
+  if (!allowPassingBaseline) assert.ok(baselinePublicCheck.failed > 0, "Fixture must have real failing behavioral tests (or explicitly use --allow-passing-baseline --observe-outcome)");
 
   const started = performance.now();
   const provider = new CodexAgentAdapter({ model });
@@ -188,7 +210,7 @@ async function run(surface: "tui" | "gui") {
   let runCapability: RunCapability | undefined;
   const init = new InitCapability({ projectRoot: root, initialGoal: goal, agent, budgetLimits });
   const registry = new CapabilityRegistry().register("init", () => init).register("run", async () => {
-    runCapability = new RunCapability(await loadProject(root), agent, { budgetLimits, maxIterations: maxAttempts });
+    runCapability = new RunCapability(await loadProject(root), agent, { budgetLimits, ...(unbounded ? {} : { maxIterations: maxAttempts }) });
     return runCapability;
   });
   const session = new FlywheelSession(root, registry, ["init", "run"]);
@@ -199,6 +221,7 @@ async function run(surface: "tui" | "gui") {
   const providerSessionIds = new Set<string>();
   const operationStarts: Array<{ capability: string | undefined; operation: string; elapsedMs: number }> = [];
   const assistanceEvents: Array<Record<string, unknown>> = [];
+  const routingEvents: Array<Record<string, unknown>> = [];
   let confirmationCount = 0;
   const asked = new Set<string>();
   const http: Array<{ route: string; status: number; elapsedMs: number }> = [];
@@ -211,6 +234,11 @@ async function run(surface: "tui" | "gui") {
     const domain = event.type === "capability.event" ? event.data?.event as { type: string; operation?: string; jobId?: string; data?: Record<string, any> } : undefined;
     if (!domain) return;
     const data = domain.data ?? {};
+    const routingType = domain.type.startsWith("routing.") ? domain.type : typeof data.routingEvent === "string" ? data.routingEvent : undefined;
+    if (routingType) {
+      routingEvents.push({ elapsedMs: performance.now() - started, type: routingType, ...data });
+      console.log(JSON.stringify({ stage: "routing", surface, type: routingType, ...data }));
+    }
     const job = String(data.jobId ?? domain.jobId ?? data.job ?? "unknown");
     if (domain.type === "operation.started") {
       const operation = { capability: event.capabilityId, operation: String(data.operationId ?? domain.operation), elapsedMs: performance.now() - started };
@@ -245,7 +273,7 @@ async function run(surface: "tui" | "gui") {
   const onInterrupt = () => { interrupted = true; void stop(); };
   process.once("SIGINT", onInterrupt);
   process.once("SIGTERM", onInterrupt);
-  const timeout = setTimeout(() => { deadlineReached = true; void stop(); }, limitMs);
+  const timeout = unbounded ? undefined : setTimeout(() => { deadlineReached = true; void stop(); }, limitMs);
   const request = async (route: string, body?: Record<string, unknown>) => {
     const url = new URL(gui!.url);
     const began = performance.now();
@@ -261,7 +289,7 @@ async function run(surface: "tui" | "gui") {
   const waitFor = async (check: () => boolean) => {
     while (!check()) {
       if (interrupted) throw new Error("Smoke interrupted; this isolated Session was stopped");
-      if (deadlineReached || performance.now() - started >= limitMs) throw new Error(`Surface deadline reached after ${limitMs}ms`);
+      if (!unbounded && (deadlineReached || performance.now() - started >= limitMs)) throw new Error(`Surface deadline reached after ${limitMs}ms`);
       const snapshot = session.snapshot();
       if (snapshot.activeCapabilityStatus === "blocked" || snapshot.status === "stopped") throw new Error(snapshot.error ?? "Session stopped before acceptance completed");
       if (snapshot.pendingInteraction && snapshot.pendingInteraction.id !== "init.confirm_proposal") {
@@ -278,7 +306,7 @@ async function run(surface: "tui" | "gui") {
   };
   let passed = false;
   try {
-    console.log(JSON.stringify({ stage: "started", surface, root, model, timeoutSeconds: limitMs / 1000 }));
+    console.log(JSON.stringify({ stage: "started", surface, root, model, unbounded, timeoutSeconds: unbounded ? null : limitMs / 1000 }));
     if (surface === "tui") terminal = runSessionTerminal(session, { input, output });
     else {
       gui = await startSessionGuiServer(session, { port: 0, onListening: () => undefined });
@@ -295,10 +323,38 @@ async function run(surface: "tui" | "gui") {
         clientRequestId: `${surface}-compact-confirm`, interactionId: "init.confirm_proposal" });
       assert.equal(accepted.receipt?.status, "accepted");
     }
-    await waitFor(() => session.snapshot().activeCapabilityId === "run" && session.snapshot().status === "idle");
+    await waitFor(() => {
+      const current = session.snapshot();
+      return (current.activeCapabilityId === "run" && current.status === "idle")
+        || (observeOutcome && current.status !== "running"
+          && current.pendingInteraction?.id !== "init.confirm_proposal"
+          && ["paused", "blocked", "waiting_for_user"].includes(current.activeCapabilityStatus ?? ""));
+    });
+    if (observeOutcome) {
+      const final = runCapability ? await runCapability.store.load() : undefined;
+      const baseline = await optionalJson<VerificationResult>(path.join(root, ".flywheel/runtime/preparation-baseline/result.json"));
+      const assessment = final?.compact?.routing?.assessment;
+      for (const { file, hash } of preservedFiles) {
+        assert.equal(createHash("sha256").update(await readFile(path.join(root, file))).digest("hex"), hash, `${file} must remain unchanged`);
+      }
+      assert.equal(await readFile(path.join(root, ".flywheel/goal.md"), "utf8"), goal);
+      if (final && runCapability) await runCapability.versions.assertExact(`v${final.iteration}`);
+      const publicResult = publicCheck(root);
+      report.observedOutcome = {
+        snapshot: session.snapshot(), baseline, independentAssessment: assessment ?? null,
+        goalAchieved: assessment?.decision === "achieved",
+        attempts: final?.compact?.attempts ?? 0, history: final?.compact?.history ?? [],
+        candidate: final?.compact?.candidate ?? null, formalVersion: final ? `v${final.iteration}` : null,
+        publicCheck: publicResult, preservedFiles: preservedFiles.map(({ file }) => file),
+      };
+      report.observationCompleted = true;
+      // Keep the strict smoke success flag separate from a completed observation.
+      passed = assessment?.decision === "achieved" && publicResult.status === 0;
+      return true;
+    }
     const final = await runCapability!.store.load();
     assert.equal(final.workflow, "compact");
-    assert.ok(final.compact && final.compact.attempts >= 1 && final.compact.attempts <= maxAttempts, "Expected bounded actual candidate attempts");
+    assert.ok(final.compact && final.compact.attempts >= 1 && (unbounded || final.compact.attempts <= maxAttempts), "Expected actual candidate attempts within the selected budget mode");
     assert.equal(final.compact.history.length, final.compact.attempts, "Every candidate must finish actual verification and retention");
     assert.equal(confirmationCount, 1);
     assert.deepEqual([...asked].filter(id => id !== "init.confirm_proposal"), [], "Unexpected extra approval or question");
@@ -337,6 +393,9 @@ async function run(surface: "tui" | "gui") {
     assert.equal(retainedResult.status, "completed");
     assert.equal(retainedResult.retention, "retain");
     assert.equal(retainedResult.target, "achieved");
+    if (final.assistanceRevision === "2026-10-29.compact.v3") {
+      assert.equal(final.compact.routing?.assessment?.decision, "achieved", "Routed tasks require an independent target assessment");
+    }
     for (const { file, hash } of preservedFiles) {
       assert.equal(createHash("sha256").update(await readFile(path.join(root, file))).digest("hex"), hash, `${file} must remain unchanged`);
     }
@@ -349,7 +408,7 @@ async function run(surface: "tui" | "gui") {
   } catch (error) {
     report.error = error instanceof Error ? error.message : String(error);
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     report.preStopSnapshot = session.snapshot();
     try {
       if (surface === "tui" && terminal) input.write("/stop\n");
@@ -370,7 +429,7 @@ async function run(surface: "tui" | "gui") {
     Object.assign(report, { passed, interrupted, deadlineReached, wallMs: performance.now() - started,
       confirmationCount, interactionIds: [...asked], streamChunks: chunks, streamChunkCount: chunks.length,
       chunksBeforeJobCompletion: chunks.filter(chunk => chunk.beforeJobCompletion).length,
-      providerSessionIds: [...providerSessionIds], operations: operationStarts, http, assistanceEvents,
+      providerSessionIds: [...providerSessionIds], operations: operationStarts, http, assistanceEvents, routingEvents,
       usage: ledger, budget: budget ? { limits: budget.limits, activeMs: budget.activeMs, knownTokens: budget.knownTokens,
         unknownUsageInvocations: budget.unknownUsageInvocations, repairUsed: budget.repairUsed, attempts: budget.attempts,
         assistance: budget.assistance, reservations: budget.reservations } : null,

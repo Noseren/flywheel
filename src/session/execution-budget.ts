@@ -1,8 +1,9 @@
 /** Mechanical limits shared by preparation, execution and protocol repair. */
 export interface ExecutionBudgetLimits {
-  candidateAttempts: number;
-  activeMs: number;
-  knownTokens: number;
+  mode?: "bounded" | "unbounded";
+  candidateAttempts: number | null;
+  activeMs: number | null;
+  knownTokens: number | null;
 }
 
 export const DEFAULT_EXECUTION_BUDGET_LIMITS: ExecutionBudgetLimits = {
@@ -10,6 +11,16 @@ export const DEFAULT_EXECUTION_BUDGET_LIMITS: ExecutionBudgetLimits = {
   activeMs: 15 * 60_000,
   knownTokens: 500_000,
 };
+
+export const UNBOUNDED_EXECUTION_BUDGET_LIMITS: ExecutionBudgetLimits = {
+  mode: "unbounded", candidateAttempts: null, activeMs: null, knownTokens: null,
+};
+export type ExecutionBudgetLimitKey = "candidateAttempts" | "activeMs" | "knownTokens";
+export function validExecutionBudgetLimits(limits: ExecutionBudgetLimits): boolean {
+  const keys: ExecutionBudgetLimitKey[] = ["candidateAttempts", "activeMs", "knownTokens"];
+  return limits.mode === "unbounded" ? keys.every(key => limits[key] === null)
+    : (limits.mode === undefined || limits.mode === "bounded") && keys.every(key => Number.isSafeInteger(limits[key]) && Number(limits[key]) > 0);
+}
 
 /** Runtime estimates, never measured usage or an Agent's cost promise. */
 export interface BudgetEstimate { tokens: number; activeMs: number; source: string }
@@ -20,6 +31,8 @@ export interface BudgetReservation {
   invocationEstimate?: BudgetEstimate;
   /** Whole-batch authority, distinct from predicted invocation duration. Absent on old reservations. */
   authorizedActiveMs?: number;
+  /** v3 trusted optional route: separate auxiliary calls, each bounded, no nested Job authority. */
+  componentChain?: { revision: "2026-10-29.compact.v3"; slots: number; slotsRemaining: number; perInvocationMs: number };
   tokensRemaining: number;
   activeMsRemaining: number;
   activeMsAtStart?: number;
@@ -33,6 +46,14 @@ export interface AssistanceAdmissionRequest {
   childCount: number;
   requiredReservationId: string;
   estimateClass?: string;
+}
+export interface RoutingChainAdmissionRequest {
+  revision: "2026-10-29.compact.v3";
+  requestId: string;
+  windowId: string;
+  binding: string;
+  slots: number;
+  requiredReservationIds: string[];
 }
 export interface AssistanceAdmission {
   requestId: string; windowId: string; binding: string;
@@ -55,9 +76,14 @@ export interface BudgetInvocation {
   interrupted?: boolean;
 }
 
+export interface BudgetLimitChange {
+  authorizationId: string; reason: string; at: number;
+  previous: ExecutionBudgetLimits; next: ExecutionBudgetLimits;
+}
 export interface ExecutionBudgetState {
   schemaVersion: 1;
   limits: ExecutionBudgetLimits;
+  limitChanges?: BudgetLimitChange[];
   attempts: string[];
   repairUsed: boolean;
   activeMs: number;
@@ -85,9 +111,7 @@ export class ExecutionBudgetExhausted extends Error {
 
 export function createExecutionBudgetState(limits: Partial<ExecutionBudgetLimits> = {}): ExecutionBudgetState {
   const resolved = { ...DEFAULT_EXECUTION_BUDGET_LIMITS, ...limits };
-  for (const [key, value] of Object.entries(resolved)) {
-    if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid execution budget ${key}`);
-  }
+  if (!validExecutionBudgetLimits(resolved)) throw new Error("Invalid execution budget limits; unbounded requires explicit mode and all three null limits");
   return { schemaVersion: 1, limits: resolved, attempts: [], repairUsed: false,
     activeMs: 0, knownTokens: 0, unknownUsageInvocations: 0, invocations: {},
     assistance: { revision: 1, decisions: {} }, reservations: {} };
@@ -107,6 +131,28 @@ export class ExecutionBudget {
     this.state = state;
     this.checkpoint = checkpoint;
     this.now = now;
+  }
+
+  limit(key: ExecutionBudgetLimitKey): number { return this.state.limits[key] === null && this.state.limits.mode === "unbounded" ? Infinity : this.state.limits[key]!; }
+
+  /** Only a trusted explicit user command may call this; opening a budget never does. */
+  async authorizeUnbounded(request: { authorizationId: string; reason: string; expectedLimits: ExecutionBudgetLimits }): Promise<void> {
+    await this.mutate(() => {
+      if (!request.authorizationId.trim() || !request.reason.trim() || !validExecutionBudgetLimits(request.expectedLimits)) throw new Error("Invalid budget expansion authorization");
+      const fingerprint = (limits: ExecutionBudgetLimits) => JSON.stringify([limits.mode ?? "bounded", limits.candidateAttempts, limits.activeMs, limits.knownTokens]);
+      const previous = this.state.limitChanges?.find(change => change.authorizationId === request.authorizationId);
+      if (previous) {
+        if (previous.reason !== request.reason || fingerprint(previous.previous) !== fingerprint(request.expectedLimits)) throw new Error("Budget authorization binding changed");
+        return;
+      }
+      if (fingerprint(this.state.limits) !== fingerprint(request.expectedLimits)) throw new Error("Budget limits changed before authorization");
+      if (Object.values(this.state.invocations).some(call => call.endedAt === undefined || call.tokens === undefined || call.interrupted)
+        || Object.values(this.state.processes ?? {}).some(process => process.endedAt === undefined)) throw new Error("Cannot expand a budget with in-flight or unknown activity");
+      const change: BudgetLimitChange = { authorizationId: request.authorizationId, reason: request.reason, at: this.now(),
+        previous: { ...this.state.limits }, next: { ...UNBOUNDED_EXECUTION_BUDGET_LIMITS } };
+      this.state.limitChanges ??= []; this.state.limitChanges.push(change);
+      this.state.limits = { ...UNBOUNDED_EXECUTION_BUDGET_LIMITS };
+    });
   }
 
   private async mutate<T>(action: () => T): Promise<T> {
@@ -177,8 +223,8 @@ export class ExecutionBudget {
         return;
       }
       this.assertAvailable();
-      if (this.occupiedTokens() + estimate.tokens > this.state.limits.knownTokens) throw new ExecutionBudgetExhausted("tokens");
-      if (this.state.activeMs + this.reservedActiveMs() + estimate.activeMs > this.state.limits.activeMs) throw new ExecutionBudgetExhausted("time");
+      if (this.occupiedTokens() + estimate.tokens > this.limit("knownTokens")) throw new ExecutionBudgetExhausted("tokens");
+      if (this.state.activeMs + this.reservedActiveMs() + estimate.activeMs > this.limit("activeMs")) throw new ExecutionBudgetExhausted("time");
       this.state.reservations ??= {};
       Object.defineProperty(this.state.reservations, identity, { value: {
         kind: "required", estimate: { ...estimate }, tokensRemaining: estimate.tokens, activeMsRemaining: estimate.activeMs, activeMsAtStart: this.state.activeMs,
@@ -208,7 +254,7 @@ export class ExecutionBudget {
       this.accountTime();
       if (!decisions) return deny("legacy-budget");
       if (Object.values(decisions).some(entry => entry.windowId === request.windowId)) return deny("window-used");
-      if (Object.values(decisions).filter(entry => entry.admitted).length >= 2) return deny("batch-limit");
+      if (this.state.limits.mode !== "unbounded" && Object.values(decisions).filter(entry => entry.admitted).length >= 2) return deny("batch-limit");
       const required = this.state.reservations?.[request.requiredReservationId];
       if (!required || required.kind !== "required" || required.closed) return deny("required-work-unreserved");
       if (Object.values(this.state.invocations).some(entry => entry.endedAt !== undefined && entry.tokens === undefined)) return deny("unknown-usage");
@@ -216,10 +262,10 @@ export class ExecutionBudget {
       const estimate = { tokens: one.tokens * (request.childCount + 1), activeMs: one.activeMs * 2,
         source: `${one.source};children:${request.childCount};parent-continuation:1` };
       decision.estimate = estimate;
-      if (this.optionalCommittedTokens() + estimate.tokens > Math.floor(this.state.limits.knownTokens * 0.2)) return deny("optional-token-limit");
-      if (this.occupiedTokens() + estimate.tokens > this.state.limits.knownTokens) return deny("tokens");
+      if (this.optionalCommittedTokens() + estimate.tokens > Math.floor(this.limit("knownTokens") * 0.2)) return deny("optional-token-limit");
+      if (this.occupiedTokens() + estimate.tokens > this.limit("knownTokens")) return deny("tokens");
       const authorizedActiveMs = 120_000;
-      if (estimate.activeMs > authorizedActiveMs || this.state.activeMs + this.reservedActiveMs() + authorizedActiveMs > this.state.limits.activeMs) return deny("time");
+      if (estimate.activeMs > authorizedActiveMs || this.state.activeMs + this.reservedActiveMs() + authorizedActiveMs > this.limit("activeMs")) return deny("time");
       const reservationId = `assistance:${request.requestId}`;
       if (this.state.reservations?.[reservationId]) throw new Error("Assistance reservation identity collision");
       decision.admitted = true;
@@ -235,6 +281,49 @@ export class ExecutionBudget {
     });
   }
 
+  /** Trusted v3 component activation. Auxiliary calls share existing optional
+   * token/batch limits; implementation and each candidate's verification remain
+   * separate required work. A route is not a recursively delegated Child batch. */
+  async admitRoutingChain(request: RoutingChainAdmissionRequest): Promise<AssistanceAdmission> {
+    return await this.mutate(() => {
+      if (request.revision !== "2026-10-29.compact.v3" || !request.requestId || !request.windowId || !request.binding
+        || !Number.isSafeInteger(request.slots) || request.slots < 1 || request.slots > 16 || !request.requiredReservationIds.length)
+        throw new Error("Invalid trusted component route admission");
+      const decisions = this.state.assistance?.decisions;
+      const fingerprint = JSON.stringify([request.revision, request.windowId, request.binding, request.slots, request.requiredReservationIds]);
+      const previous = decisions?.[request.requestId];
+      if (previous) {
+        if (previous.requestFingerprint !== fingerprint) throw new Error("Component route binding changed");
+        return { ...previous, ...(previous.estimate ? { estimate: { ...previous.estimate } } : {}) };
+      }
+      const decision: AssistanceAdmission = { requestId: request.requestId, windowId: request.windowId, binding: request.binding, admitted: false, requestFingerprint: fingerprint };
+      const deny = (reason: string) => { decision.reason = reason; if (decisions) Object.defineProperty(decisions, request.requestId,
+        { value: decision, enumerable: true, configurable: true, writable: true }); return { ...decision }; };
+      this.accountTime();
+      if (!decisions) return deny("legacy-budget");
+      if (Object.values(decisions).some(entry => entry.windowId === request.windowId)) return deny("window-used");
+      if (this.state.limits.mode !== "unbounded" && Object.values(decisions).filter(entry => entry.admitted).length >= 2) return deny("batch-limit");
+      if (request.requiredReservationIds.some(id => { const r = this.state.reservations?.[id]; return !r || r.kind !== "required" || r.closed; })) return deny("required-work-unreserved");
+      if (Object.values(this.state.invocations).some(entry => entry.endedAt !== undefined && entry.tokens === undefined)) return deny("unknown-usage");
+      const one = this.estimateInvocation("assistance");
+      const estimate = { tokens: one.tokens * request.slots, activeMs: one.activeMs * request.slots, source: `${one.source};component-slots:${request.slots}` };
+      decision.estimate = estimate;
+      if (this.optionalCommittedTokens() + estimate.tokens > Math.floor(this.limit("knownTokens") * 0.2)) return deny("optional-token-limit");
+      if (this.occupiedTokens() + estimate.tokens > this.limit("knownTokens")) return deny("tokens");
+      const authorizedActiveMs = request.slots * 120_000;
+      if (one.activeMs > 120_000 || this.state.activeMs + this.reservedActiveMs() + authorizedActiveMs > this.limit("activeMs")) return deny("time");
+      const reservationId = `routing-chain:${request.requestId}`;
+      if (this.state.reservations?.[reservationId]) throw new Error("Component reservation collision");
+      decision.admitted = true; decision.reservationId = reservationId; decision.authorizedActiveMs = authorizedActiveMs;
+      this.state.reservations ??= {};
+      Object.defineProperty(this.state.reservations, reservationId, { value: { kind: "assistance", estimate, invocationEstimate: { ...one }, authorizedActiveMs,
+        componentChain: { revision: request.revision, slots: request.slots, slotsRemaining: request.slots, perInvocationMs: 120_000 },
+        tokensRemaining: estimate.tokens, activeMsRemaining: authorizedActiveMs, activeMsAtStart: this.state.activeMs }, enumerable: true, configurable: true, writable: true });
+      Object.defineProperty(decisions, request.requestId, { value: decision, enumerable: true, configurable: true, writable: true });
+      return { ...decision, estimate: { ...estimate } };
+    });
+  }
+
   /** Caller confirms the batch/evaluation is terminal; only unstarted capacity is
    * released. Unknown invocation occupancy remains in U after this closes. */
   async closeReservation(identity: string): Promise<void> {
@@ -245,6 +334,7 @@ export class ExecutionBudget {
         throw new Error("Cannot release an in-flight or interrupted reservation");
       reservation.tokensRemaining = 0;
       reservation.activeMsRemaining = 0;
+      if (reservation.componentChain) reservation.componentChain.slotsRemaining = 0;
       reservation.closed = true;
     });
   }
@@ -285,33 +375,38 @@ export class ExecutionBudget {
   assertAvailable(): void {
     if (this.checkpointFailed) throw new Error("Execution budget checkpoint failed; refusing further work");
     this.accountTime();
-    if (this.state.activeMs >= this.state.limits.activeMs) throw new ExecutionBudgetExhausted("time");
-    if (this.state.knownTokens >= this.state.limits.knownTokens) throw new ExecutionBudgetExhausted("tokens");
+    if (this.state.limits.mode === "unbounded" && Object.values(this.state.invocations).some(entry => entry.endedAt !== undefined && entry.tokens === undefined)) throw new Error("Unknown invocation usage must be reconciled before further unbounded work");
+    if (this.state.activeMs >= this.limit("activeMs")) throw new ExecutionBudgetExhausted("time");
+    if (this.state.knownTokens >= this.limit("knownTokens")) throw new ExecutionBudgetExhausted("tokens");
   }
 
   remainingActiveMs(reservationId?: string): number {
     this.accountTime();
-    const total = Math.max(0, this.state.limits.activeMs - this.state.activeMs);
+    const total = Math.max(0, this.limit("activeMs") - this.state.activeMs);
     const reservation = reservationId ? this.state.reservations?.[reservationId] : undefined;
     if (!reservation || reservation.kind !== "assistance") return total;
     // Optional calls cannot run through the time retained for necessary work.
     // The batch limit follows active union time, so offline waiting grants none.
     const necessary = Object.values(this.state.reservations ?? {}).filter(entry => entry.kind === "required")
       .reduce((sum, entry) => sum + entry.activeMsRemaining, 0);
+    if (reservation.componentChain) return Math.max(0, Math.min(total - necessary, reservation.componentChain.perInvocationMs));
     const batch = (reservation.authorizedActiveMs ?? reservation.estimate.activeMs)
       - Math.max(0, this.state.activeMs - (reservation.activeMsAtStart ?? this.state.activeMs));
     return Math.max(0, Math.min(total - necessary, batch));
   }
 
   remainingInvocationActiveMs(identity: string): number {
-    return this.remainingActiveMs(this.state.invocations[identity]?.reservationId);
+    const invocation = this.state.invocations[identity];
+    const remaining = this.remainingActiveMs(invocation?.reservationId);
+    const chain = invocation?.reservationId ? this.state.reservations?.[invocation.reservationId]?.componentChain : undefined;
+    return chain ? Math.max(0, Math.min(remaining, chain.perInvocationMs - Math.max(0, this.now() - invocation.startedAt))) : remaining;
   }
 
   async reserveAttempt(identity: string): Promise<void> {
     await this.mutate(() => {
       this.assertAvailable();
       if (this.state.attempts.includes(identity)) return;
-      if (this.state.attempts.length >= this.state.limits.candidateAttempts) throw new ExecutionBudgetExhausted("attempts");
+      if (this.state.attempts.length >= this.limit("candidateAttempts")) throw new ExecutionBudgetExhausted("attempts");
       this.state.attempts.push(identity);
     });
   }
@@ -340,19 +435,21 @@ export class ExecutionBudget {
           : { tokens: options.estimatedTokens ?? fallback.tokens, activeMs: options.estimatedActiveMs ?? fallback.activeMs, source: fallback.source };
         this.validateEstimate(estimate);
         if (reservation) {
+          if (reservation.componentChain && reservation.componentChain.slotsRemaining <= 0) throw new ExecutionBudgetExhausted("attempts");
           if (this.remainingActiveMs(options.reservationId) <= 0) throw new ExecutionBudgetExhausted("time");
           // Final provider usage can exceed its estimate in flight. Record it
           // honestly, but never start another optional call through the excess.
-          if (reservation.kind === "assistance" && this.optionalCommittedTokens() > Math.floor(this.state.limits.knownTokens * 0.2))
+          if (reservation.kind === "assistance" && this.optionalCommittedTokens() > Math.floor(this.limit("knownTokens") * 0.2))
             throw new ExecutionBudgetExhausted("tokens");
           if (reservation.tokensRemaining < estimate.tokens) throw new ExecutionBudgetExhausted("tokens");
           // R/E -> U, a transfer rather than a second charge. In-flight actual
           // overspend is recorded on completion, without rewriting estimates.
-          if (this.occupiedTokens() > this.state.limits.knownTokens) throw new ExecutionBudgetExhausted("tokens");
+          if (this.occupiedTokens() > this.limit("knownTokens")) throw new ExecutionBudgetExhausted("tokens");
           reservation.tokensRemaining -= estimate.tokens;
-          reservation.activeMsRemaining = Math.max(0, reservation.activeMsRemaining - estimate.activeMs);
+          reservation.activeMsRemaining = Math.max(0, reservation.activeMsRemaining - (reservation.componentChain?.perInvocationMs ?? estimate.activeMs));
+          if (reservation.componentChain) reservation.componentChain.slotsRemaining -= 1;
           invocation.reservationId = options.reservationId;
-        } else if (this.occupiedTokens() + estimate.tokens > this.state.limits.knownTokens) throw new ExecutionBudgetExhausted("tokens");
+        } else if (this.occupiedTokens() + estimate.tokens > this.limit("knownTokens")) throw new ExecutionBudgetExhausted("tokens");
         invocation.estimatedTokens = estimate.tokens;
         invocation.estimatedActiveMs = estimate.activeMs;
         invocation.estimateClass = options.estimateClass ?? "model";

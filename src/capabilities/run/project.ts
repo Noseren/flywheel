@@ -10,7 +10,7 @@ import {
 } from "../../services/workspace/index.ts";
 import type { ChangeScope } from "../../services/workspace/protocol.ts";
 import { readVerificationConfig } from "../compact-evaluation.ts";
-import { COMPACT_ASSISTANCE_REVISION } from "../compact-assistance.ts";
+import { isCompactAssistanceRevision } from "../compact-assistance.ts";
 
 /** Run-owned machine boundary. WorkspaceService does not interpret these task roles. */
 export interface RuntimeBoundary {
@@ -124,7 +124,7 @@ async function loadReadyManifest(root: string): Promise<{ files: ReadyManifestFi
     }
     ids.add(file.id);
   }
-  if (value.assistanceRevision !== undefined && (value.workflow !== "compact" || value.assistanceRevision !== COMPACT_ASSISTANCE_REVISION)) {
+  if (value.assistanceRevision !== undefined && (value.workflow !== "compact" || !isCompactAssistanceRevision(value.assistanceRevision))) {
     throw new Error("Unsupported compact assistance policy revision");
   }
   return { files: value.files, ...(value.workflow === "compact" ? { workflow: "compact" } : {}),

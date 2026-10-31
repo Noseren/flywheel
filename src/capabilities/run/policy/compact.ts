@@ -1,13 +1,14 @@
 import { defineExecutionPolicy } from "../../../session/policy.ts";
 import { ExecutionBudgetExhausted } from "../../../session/execution-budget.ts";
 import { CompactVerificationNeedsInput, runCompactVerification, readVerificationConfig, parseVerificationResult, validateVerificationEvidence, type VerificationResult } from "../../compact-evaluation.ts";
-import { COMPACT_ASSISTANCE_REVISION, compactAssistanceGuidance, requiredVerificationWork } from "../../compact-assistance.ts";
+import { COMPACT_ASSISTANCE_REVISION, isCompactAssistanceRevision, compactAssistanceGuidance, requiredVerificationWork } from "../../compact-assistance.ts";
 import type { AgentStateManifest, EvolutionRecord } from "../state.ts";
 import { versionOf } from "../state.ts";
-import { bootstrap, type RunExecutionPolicy, type RunPolicyServices } from "./operations.ts";
-import type { RunState } from "../protocol.ts";
+import { bootstrap, type RunExecutionPolicy, type RunPolicyServices, type RunOperationResult } from "./operations.ts";
+import type { RunState, RunCommand } from "../protocol.ts";
+import { createRoutedCompactRunPolicy, ROUTED_COMPACT_REVISION } from "./compact-v3.ts";
 
-type Context = { services: RunPolicyServices; state: RunState; signal: AbortSignal };
+export type Context = { services: RunPolicyServices; state: RunState; signal: AbortSignal };
 
 async function pauseForInput({ services, state }: Pick<Context, "services" | "state">, message: string) {
   await services.state.emit(state, "operation.activity", { needsInput: true, message });
@@ -54,8 +55,8 @@ async function verify({ services, state, signal }: Context, candidate: boolean):
       provider: services.agent.provider, model: services.agent.model,
       execute: async (job, jobSignal) => await services.agent.execute(state, job, jobSignal),
     }, executionBudget: services.executionBudget, signal,
-    ...(state.assistanceRevision === COMPACT_ASSISTANCE_REVISION ? {
-      requiredReservationId: `verification:run:${state.capabilityRunId}:${item?.id ?? versionOf(state)}`,
+    ...(isCompactAssistanceRevision(state.assistanceRevision) ? {
+      requiredReservationId: (item && data.routing?.verificationReservations?.[item.id]) ?? `verification:run:${state.capabilityRunId}:${item?.id ?? versionOf(state)}`,
     } : {}),
     emit: async (type, event) => await services.state.emit(state, "operation.activity", { verificationEvent: type, ...event }),
   });
@@ -77,7 +78,7 @@ async function verify({ services, state, signal }: Context, candidate: boolean):
   return result;
 }
 
-async function baseline(context: Context) {
+export async function baseline(context: Context) {
   const data = compact(context.state);
   const { services } = context;
   const preparedDir = services.workspace.join(services.project.runtimeDir, "preparation-baseline");
@@ -123,13 +124,13 @@ async function baseline(context: Context) {
     }
   }
   const config = await readVerificationConfig(services.project.verificationPath!);
-  if (result.target === "achieved" || (result.target === "inconclusive" && config.acceptance !== "open")) {
+  if (context.state.assistanceRevision !== ROUTED_COMPACT_REVISION && (result.target === "achieved" || (result.target === "inconclusive" && config.acceptance !== "open"))) {
     return { status: "paused" as const, reason: `Verification target: ${result.target}. ${result.summary}` };
   }
   return { status: "completed" as const };
 }
 
-async function optimize({ services, state, signal }: Context) {
+export async function optimize({ services, state, signal }: Context) {
   const data = compact(state);
   if (!data.candidate) {
     if (state.maxIterations !== undefined && data.attempts >= state.maxIterations) throw new ExecutionBudgetExhausted("attempts");
@@ -154,22 +155,24 @@ async function optimize({ services, state, signal }: Context) {
     `# Current version\n${item.baseVersion}`,
     `# Public verification feedback\n${baseline.publicFeedback}`,
     `# Prior attempts and public failure feedback\n${JSON.stringify(data.history.slice(-5))}`,
+    ...(data.routing?.guidance ? [`# Public component guidance\n${data.routing.guidance}`] : []),
   ].join("\n\n"));
   const contextHash = await services.workspace.sha256(contextPath);
-  const assistanceEnabled = state.assistanceRevision === COMPACT_ASSISTANCE_REVISION && !!services.executionBudget;
-  const requiredReservationId = `verification:run:${state.capabilityRunId}:${item.id}`;
+  const assistanceEnabled = isCompactAssistanceRevision(state.assistanceRevision) && !!services.executionBudget;
+  const requiredReservationId = data.routing?.verificationReservations?.[item.id] ?? `verification:run:${state.capabilityRunId}:${item.id}`;
   if (assistanceEnabled) {
     const config = await readVerificationConfig(services.project.verificationPath!);
-    await services.executionBudget!.reserveRequiredWork(requiredReservationId, requiredVerificationWork(config, services.executionBudget!));
+    await services.executionBudget!.reserveRequiredWork(requiredReservationId,
+      services.executionBudget!.state.reservations?.[requiredReservationId]?.estimate ?? requiredVerificationWork(config, services.executionBudget!));
   }
   const result = await services.guard.project(state, `optimize:${item.id}`, async () => await services.agent.execute(state, {
-    id: `compact-${item.id}`, operation: "optimize", label: `optimizer:${item.id}`,
+    id: `compact-${item.id}${data.routing?.reviewRepairAttempt === item.id ? ":review-repair" : ""}`, operation: "optimize", label: `optimizer:${item.id}`,
     cwd: item.workspace, tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     readRoots: [item.worktree, contextPath], writeRoots: [item.worktree],
     deniedPaths: [services.workspace.join(item.worktree, ".git"), services.workspace.join(item.worktree, ".flywheel")],
     sessionKey: `compact:${item.id}`,
     delegation: assistanceEnabled ? "enabled" : "disabled",
-    ...(assistanceEnabled ? { assistance: { revision: COMPACT_ASSISTANCE_REVISION,
+    ...(assistanceEnabled ? { assistance: { revision: state.assistanceRevision!,
       windowId: `optimize:${state.capabilityRunId}:${item.id}`, requiredReservationId } } : {}),
     prompt: services.prompt("run.compact.optimize", { context_path: contextPath, worktree_path: item.worktree,
       change_scope: services.project.boundary.change_scope, assistance_guidance: compactAssistanceGuidance(assistanceEnabled) }),
@@ -186,7 +189,7 @@ async function optimize({ services, state, signal }: Context) {
   return { status: "completed" as const };
 }
 
-async function verifyCandidate(context: Context) {
+export async function verifyCandidate(context: Context) {
   const item = compact(context.state).candidate;
   if (!item) throw new Error("No reserved candidate");
   if (item.phase !== "verified") {
@@ -199,7 +202,7 @@ async function verifyCandidate(context: Context) {
   return { status: "completed" as const };
 }
 
-async function retain({ services, state }: Context) {
+export async function retain({ services, state }: Context) {
   const data = compact(state);
   const item = data.candidate;
   if (!item && data.retainedOutcome) {
@@ -253,19 +256,22 @@ async function retain({ services, state }: Context) {
   data.history.push({ id: item.id, retained, publicFeedback: result.publicFeedback });
   delete data.candidate;
   const config = await readVerificationConfig(services.project.verificationPath!);
-  const pauseReason = retained && (result.target === "achieved" || (result.target === "inconclusive" && config.acceptance !== "open"))
+  const pauseReason = state.assistanceRevision !== ROUTED_COMPACT_REVISION && retained && (result.target === "achieved" || (result.target === "inconclusive" && config.acceptance !== "open"))
     ? `Verification target: ${result.target}. ${result.summary}`
     : result.retention === "inconclusive" ? `Retention inconclusive. ${result.summary}` : undefined;
   data.retainedOutcome = { iteration: state.iteration, ...(pauseReason ? { pauseReason } : {}) };
   await services.state.checkpoint(state);
-  await services.state.emit(state, "operation.activity", { attempt: item.id, retained, target: retained ? result.target : undefined });
+  await services.state.emit(state, "operation.activity", { attempt: item.id, retained,
+    ...(state.assistanceRevision === ROUTED_COMPACT_REVISION ? { evaluationTarget: retained ? result.target : undefined }
+      : { target: retained ? result.target : undefined }) });
   if (pauseReason) return { status: "paused" as const, reason: pauseReason };
   return { status: "completed" as const };
 }
 
 /** Compact operations run under the existing Session scheduler and transaction guards. */
 export function createCompactRunExecutionPolicy(assistanceRevision?: string): RunExecutionPolicy {
-  return defineExecutionPolicy({ id: "flywheel.run", revision: assistanceRevision === COMPACT_ASSISTANCE_REVISION ? COMPACT_ASSISTANCE_REVISION : "compact-1",
+  if (assistanceRevision === ROUTED_COMPACT_REVISION) return createRoutedCompactRunPolicy();
+  return defineExecutionPolicy<RunPolicyServices, RunState, RunCommand, RunOperationResult>({ id: "flywheel.run", revision: assistanceRevision === COMPACT_ASSISTANCE_REVISION ? COMPACT_ASSISTANCE_REVISION : "compact-1",
     requires: ["agent", "workspace", "state", "version", "prompt", "process"],
     operations: { bootstrap, verify: baseline, optimize, verify_candidate: verifyCandidate, retain },
     decide({ lastOutcome }) {

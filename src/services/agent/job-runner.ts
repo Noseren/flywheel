@@ -56,8 +56,9 @@ export async function runAgentJob(
     startedAt,
   };
   await request.executionBudget?.startInvocation(invocationId, request.invocationReservation);
-  const timeLimit = request.executionBudget
-    ? AbortSignal.timeout(Math.max(1, Math.ceil(request.executionBudget.remainingInvocationActiveMs(invocationId)))) : undefined;
+  const remainingMs = request.executionBudget?.remainingInvocationActiveMs(invocationId);
+  const timeLimit = remainingMs !== undefined && Number.isFinite(remainingMs)
+    ? AbortSignal.timeout(Math.max(1, Math.ceil(remainingMs))) : undefined;
   const invocationSignal = signal && timeLimit ? AbortSignal.any([signal, timeLimit]) : signal ?? timeLimit;
   await job.onEvent?.({ sdkEvent: "invocation.started", ...identity });
   let result: AgentResult;

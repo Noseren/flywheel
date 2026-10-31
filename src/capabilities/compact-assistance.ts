@@ -1,13 +1,18 @@
 import type { BudgetEstimate, ExecutionBudget } from "../session/execution-budget.ts";
 import type { VerificationConfig } from "./compact-evaluation.ts";
 import type { JobSpec } from "../services/agent/job-protocol.ts";
+import { COMPONENT_ROUTING_REVISION } from "./component-routing-revision.ts";
 
 /** Runtime-owned marker. Missing markers keep the original compact permissions. */
 export const COMPACT_ASSISTANCE_REVISION = "2026-10-24.compact.v2";
 
+export function isCompactAssistanceRevision(revision: string | undefined): revision is string {
+  return revision === COMPACT_ASSISTANCE_REVISION || revision === COMPONENT_ROUTING_REVISION;
+}
+
 export function compactPolicyJob(job: JobSpec, revision: string | undefined, operation: string): JobSpec {
-  const approved = revision === COMPACT_ASSISTANCE_REVISION && job.operation === operation
-    && job.assistance?.revision === COMPACT_ASSISTANCE_REVISION;
+  const approved = isCompactAssistanceRevision(revision) && job.operation === operation
+    && job.assistance?.revision === revision;
   return approved ? { ...job, delegation: "enabled" }
     : { ...job, delegation: "disabled", assistance: undefined };
 }

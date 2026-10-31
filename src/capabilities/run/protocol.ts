@@ -5,6 +5,7 @@ import type {
   PersistedOperationOutcome,
 } from "../../session/protocol.ts";
 import type { Interaction } from "../../session/protocol.ts";
+import type { CompactRunRoutingState } from "./policy/compact-v3.ts";
 
 export const RUN_OPERATIONS = [
   "tasking",
@@ -24,6 +25,7 @@ export interface RunState extends CapabilityState {
   workflow?: "compact";
   assistanceRevision?: string;
   compact?: {
+    routing?: CompactRunRoutingState;
     attempts: number;
     baselineResultPath?: string;
     baselineResultSha256?: string;

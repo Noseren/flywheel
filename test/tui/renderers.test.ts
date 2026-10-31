@@ -16,6 +16,14 @@ function sink(): { output: Writable; text(): string } {
   };
 }
 
+test("runtime renderer shows user-facing unresolved facts on an independent assessment", () => {
+  const target = sink();
+  new RuntimeEventRenderer().render({ type: "operation.completed", operation: "assess_target", version: "v2",
+    data: { operationId: "assess_target", status: "paused", result: { assessment: "inconclusive", userSummary: { summary: "现有检查通过。", unresolved: ["组合行为尚未验证。"] } } },
+  } as RunEvent, target.output);
+  assert.match(target.text(), /现有检查通过。\n未决事项：\n• 组合行为尚未验证。/);
+});
+
 test("agent renderer keeps commands, output, files, and tools compact", () => {
   const target = sink();
   const renderer = new AgentActivityRenderer();

@@ -2,6 +2,7 @@ import { createInterface, type Interface } from "node:readline";
 import { Writable, type Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { buildUsageLedger } from "../session/usage-ledger.ts";
+import { targetSummaryText } from "../capabilities/run/target-summary.ts";
 
 import type { Terminal } from "@earendil-works/pi-tui";
 
@@ -166,7 +167,10 @@ export async function runSessionTerminal(
       else if (operation === "evaluate" && typeof result.evaluationReportPath === "string") formalResult = "✓ 正式版本评价已完成（不代表目标达成）";
       else if (operation === "select" && result.action === "promote" && typeof result.promotedVersion === "string") formalResult = `✓ 候选已晋升为 ${result.promotedVersion}`;
     }
-    if (formalResult) { appendSystem(`${formalResult}\n`); refresh(); return; }
+      if (formalResult) {
+        const summary = operation === "assess_target" && domain.type === "operation.completed" ? targetSummaryText(result?.userSummary) : undefined;
+        appendSystem(`${formalResult}\n${summary ? `${summary}\n` : ""}`); refresh(); return;
+      }
     if (screen) {
       screen.ingestDomain(capabilityId ?? (init ? "init" : "run"), domain);
       const started = domain.type === "job.started";
